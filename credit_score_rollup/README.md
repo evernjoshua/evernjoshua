@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_10.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_11.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -30,9 +30,11 @@ written one after the other at the bottom, in that order.
 
 ## Which tabs come in
 
-The sweep runs from the tab after `Secured Card <=600` through `Organic Omni $0_ALL`.
-The families that sit before that range are named one by one in `EXTRA_SEGMENTS` and read
-exactly as spelled; nothing else from before `Secured Card <=600` is picked up.
+The sweep runs from the tab after `Secured Card<=600` through `CSOX $75640+`, the last
+segment tab. The families that sit before that range are named one by one in
+`EXTRA_SEGMENTS` and read exactly as spelled; nothing else from before `Secured Card<=600`
+is picked up. `NameManager` and `Sheet1`, which follow the last segment tab, are in
+`SKIP_SHEETS`.
 
 ## Campaign totals
 
@@ -47,6 +49,17 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v11
+
+- Range names corrected against the real workbook: the tab is `Secured Card<=600` with
+  no space, and there is no `Organic Omni $0_ALL` in the main workbook - the last
+  segment tab is `CSOX $75640+`, with `NameManager` and `Sheet1` after it.
+- `MoneyLion DCO $75 <=600` added to `EXTRA_SEGMENTS`; it does sit before the range.
+- `EXTRA_SEGMENTS` reordered to match the workbook's own tab order.
+- No `BrightMoney` tab exists in the workbook, so that entry is commented out.
+- `sheet_span` now matches tab names ignoring spacing as well as case, so
+  `Secured Card <=600` finds `Secured Card<=600`.
 
 ### v10
 

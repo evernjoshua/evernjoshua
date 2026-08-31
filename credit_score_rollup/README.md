@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_8.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_9.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -28,7 +28,30 @@ the last tab of either family.
 `Organic Omni $0_ALL` have no segments behind them. They are listed in `ROLLUP_ONLY` and
 written one after the other at the bottom, in that order.
 
+## Campaign totals
+
+Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
+
+| row | tab |
+| --- | --- |
+| `Vantage <=600` | `<=600` |
+| `Vantage 601-639` | `601-639` |
+| `Vantage 640+` | `640+` |
+| `Omni` | `Omni_ALL` |
+| `Campaign Total` | `Digital_ALL` |
+
 ## Version history
+
+### v9
+
+- File names follow the house convention - `09'26 P&L Forecast - All.xlsm` and
+  `09'26 P&L Forecast - Rollup.xlsx` - built from the two months. `FOLDER_PATTERN`
+  puts each month in its own folder, and four commented lines in the settings cell
+  name the files outright when a month is spelled some other way.
+- The campaign-total block above, underneath the table in the notebook preview, the
+  Excel file and the HTML page.
+- Segments, roll-ups and campaign totals now get three separate colour scales instead
+  of two, since a campaign total restates the whole book.
 
 ### v8
 

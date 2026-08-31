@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_9.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_10.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -28,6 +28,12 @@ the last tab of either family.
 `Organic Omni $0_ALL` have no segments behind them. They are listed in `ROLLUP_ONLY` and
 written one after the other at the bottom, in that order.
 
+## Which tabs come in
+
+The sweep runs from the tab after `Secured Card <=600` through `Organic Omni $0_ALL`.
+The families that sit before that range are named one by one in `EXTRA_SEGMENTS` and read
+exactly as spelled; nothing else from before `Secured Card <=600` is picked up.
+
 ## Campaign totals
 
 Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
@@ -41,6 +47,14 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v10
+
+- The sweep is back to starting after `Secured Card <=600`. v8 had widened it to the
+  whole workbook, which dragged in tabs that are not wanted.
+- `EXTRA_SEGMENTS` names the tabs from before that range that ARE wanted - the $39
+  products, Creditcards.com, and the Organic and CSOX $95/Wander families - read tab by
+  tab and written above the swept rows, with their roll-up rows placed as usual.
 
 ### v9
 

@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_11.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_12.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -36,6 +36,13 @@ segment tab. The families that sit before that range are named one by one in
 is picked up. `NameManager` and `Sheet1`, which follow the last segment tab, are in
 `SKIP_SHEETS`.
 
+## Row order
+
+Families are grouped by annual fee, in `FEE_ORDER`: **$75, then $39, then $0, then $95**,
+then the campaign totals, then any rows the volume floor excluded. Inside a fee, families
+keep the order they come off the tabs, and each roll-up row stays with its own family.
+The $0 slot is where the roll-up-only rows land.
+
 ## Campaign totals
 
 Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
@@ -49,6 +56,17 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v12
+
+- Rows are grouped by annual fee - `FEE_ORDER = ["$75", "$39", "$0", "$95"]` - with the
+  campaign totals after them.
+- A tab under `MIN_VOLUME` (1) in BOTH months is kept out of the heat map, and listed
+  below everything else with no figures and a Comments note saying it had zero in both
+  months. `SHOW_EXCLUDED = False` drops the listing too.
+- The Comments column is now written from the row itself, so any row can carry a note.
+- The HTML page loses its explanatory prose: the summary line under the title and the
+  whole "Reading the shading" / "Where each number comes from" footer.
 
 ### v11
 

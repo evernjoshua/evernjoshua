@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_12.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_13.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -36,6 +36,14 @@ segment tab. The families that sit before that range are named one by one in
 is picked up. `NameManager` and `Sheet1`, which follow the last segment tab, are in
 `SKIP_SHEETS`.
 
+## Metrics
+
+The volume line, B6, is labelled **Booked Accts**, and the tile above the table is
+**Booked accounts**. Right after its variance sits **Share of Booked**: the row's booked
+accounts over its roll-up's, so a family's segments add to 100% and the roll-up row reads
+100%. A family with no roll-up tab is divided by the sum of its own segments; the
+campaign-total rows are divided by the last of them, the Campaign Total row.
+
 ## Row order
 
 Families are grouped by annual fee, in `FEE_ORDER`: **$75, then $39, then $0, then $95**,
@@ -56,6 +64,17 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v13
+
+- "Volume" is now `VOLUME = "Booked Accts"`, and the first summary tile reads
+  "Booked accounts".
+- New `Share of Booked` metric straight after it - current, prior and the variance in
+  percentage points. It has no cell of its own; it is computed once the roll-up rows
+  are known.
+- The HTML page drops the Comments column. Anything a row has to say - so far, only the
+  excluded rows - is printed beside its name instead. Excel and the notebook preview
+  keep the column.
 
 ### v12
 

@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_13.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_14.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -47,9 +47,18 @@ campaign-total rows are divided by the last of them, the Campaign Total row.
 ## Row order
 
 Families are grouped by annual fee, in `FEE_ORDER`: **$75, then $39, then $0, then $95**,
-then the campaign totals, then any rows the volume floor excluded. Inside a fee, families
-keep the order they come off the tabs, and each roll-up row stays with its own family.
-The $0 slot is where the roll-up-only rows land.
+then the campaign totals, then any rows the volume floor excluded. The $0 slot is where the
+roll-up-only rows land.
+
+Inside a fee, `BRAND_ORDER` sets the sequence:
+
+> Credit Karma, Experian, MoneyLion, Credit Sesame, Google, AMEX DCO, MoneyLion DCO,
+> Creditcards.com, Organic
+
+A brand with no sheet at that fee is skipped. `BRAND_ALIASES` maps how the tabs spell each
+one - `CK` is Credit Karma, `EXPX` is Experian, `CSOX` is Credit Sesame - and the longest
+match wins, so `MoneyLion DCO` is never mistaken for `MoneyLion`. Two families of the same
+brand and fee keep tab order, and each roll-up row stays with its own family.
 
 ## Campaign totals
 
@@ -64,6 +73,11 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v14
+
+- `BRAND_ORDER` sequences the families inside each fee, with `BRAND_ALIASES` translating
+  the tab spellings. Missing brands are skipped rather than leaving a gap.
 
 ### v13
 

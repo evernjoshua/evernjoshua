@@ -6,7 +6,9 @@
 ## Use it
 
 ```bash
-pip install openpyxl pandas
+pip install openpyxl pandas    # core
+pip install pyxlsb             # for .xlsb
+pip install xlrd               # for .xls
 jupyter notebook excel_workbook_comparison.ipynb
 ```
 
@@ -46,6 +48,8 @@ All configurable in section 2:
 | `blank_equals_empty_string` | `True` | Empty cell equals `""` |
 | `numeric_strings_as_numbers` | `False` | Text `"1,234.50"` equals number `1234.5` |
 | `ignore_time_component` | `False` | Compare dates, ignore times |
+| `convert_binary_formats` | `"auto"` | For `.xlsb`/`.xls`, try Excel then LibreOffice to convert to `.xlsx` first |
+| `date_handling` | `"auto"` | Bridge serial-number dates when one side is read by `pyxlsb` |
 | `only_sheets` / `ignore_sheets` / `sheet_map` | — | Restrict or re-map sheet pairing |
 | `include_hidden_sheets` | `True` | Include hidden sheets |
 | `per_sheet_tabs` | `False` | Add a tab per differing sheet |
@@ -61,6 +65,29 @@ All configurable in section 2:
   needs a join on a key column instead.
 - **Not compared:** charts, chart sheets, images, pivot caches, formatting, number formats, column
   widths, comments, macros, defined names.
-- **`.xls` / `.xlsb` are not supported** — convert to `.xlsx` first.
+## Formats
 
-Verified against ~1.2M cells (3 sheets × 5,000 rows × 40 columns per side) in about 9 seconds.
+`.xlsx`, `.xlsm`, `.xlsb` and `.xls`, and the two sides don't have to match.
+
+`.xlsb`/`.xls` are first offered to Excel (COM) and then LibreOffice for conversion to `.xlsx`, because a
+converted file carries real dates and real cached values. If neither is available the notebook falls back
+to reading the binary directly with `pyxlsb` / `xlrd`, and records which path ran in the report.
+
+The direct `.xlsb` path has one real caveat: the binary format stores no cell types, so **pyxlsb returns
+dates as raw Excel serial numbers** (`45842.0`, not `2025-07-04`) and cannot see formulas at all.
+
+- Two `.xlsb` files compare fine — both sides speak serials.
+- `.xlsb` vs `.xlsx` would otherwise call every date different, so `date_handling="auto"` converts both
+  sides to serial numbers. Dates compare correctly; the report just shows that side's dates as numbers.
+- The uncalculated-formula check is skipped for a `.xlsb` read this way.
+
+Converting to `.xlsx` (Excel: *File → Save As → Excel Workbook*) removes all three.
+
+## Verified against
+
+- ~1.2M cells (3 sheets × 5,000 rows × 40 columns per side) in about 9 seconds.
+- Real `.xlsb` and `.xls` files: 1-indexing, value fidelity, date/serial bridging both ways, and a
+  graceful fallback when no converter is available.
+- The Excel-COM and LibreOffice conversion paths are written to their documented interfaces but could
+  not be exercised in the environment this was built in — a conversion failure degrades to the direct
+  binary read rather than raising.

@@ -1,5 +1,16 @@
 # Excel workbook comparison (values only)
 
+Two tools in this folder:
+
+| File | Use it for |
+|---|---|
+| `excel_workbook_comparison.ipynb` | **General diff.** Any two workbooks, every sheet, every cell. Produces a list of differences. |
+| `vintage_delta_comparison.ipynb` + `vintage_compare.py` | **Vintage reconciliation.** A declared layout (header blocks, category columns, a known row insertion) compared region by region, producing a workbook that mirrors the originals with deltas as the cell values. See [Vintage delta comparison](#vintage-delta-comparison). |
+
+---
+
+## General diff
+
 `excel_workbook_comparison.ipynb` compares two Excel workbooks sheet by sheet and cell by cell on
 **cached values, not formulas**, and writes a third workbook listing every difference.
 
@@ -91,3 +102,58 @@ Converting to `.xlsx` (Excel: *File → Save As → Excel Workbook*) removes all
 - The Excel-COM and LibreOffice conversion paths are written to their documented interfaces but could
   not be exercised in the environment this was built in — a conversion failure degrades to the direct
   binary read rather than raising.
+
+
+---
+
+# Vintage delta comparison
+
+`vintage_delta_comparison.ipynb` drives `vintage_compare.py`. Both files must sit in the same folder.
+
+Unlike the general diff, the layout here is **declared, not discovered** — which rows are headers, which
+columns are categories, and where one workbook carries extra rows — so the alignment is explicit and
+auditable rather than guessed at.
+
+## Declared layout
+
+| | `Vintage Summary` | `Vintage1` … `Vintage24` |
+|---|---|---|
+| Copied through as-is | rows 1–24 (charts block) | rows 1–9 |
+| Compared block | `A25:Y756` | `A10:AA248` |
+| Category columns | `A` | `A` and `B` |
+| Differences ignored | — | column `A` |
+| Delta columns | `B`–`Y` | `C`–`AA` |
+| Row alignment | 1:1 | 1:1 to row 200, then row 201 of the *snow* workbook is skipped: base 201 ↔ snow 202 … base 248 ↔ snow 249 |
+
+Change it by editing `vintage_specs()` in `vintage_compare.py`, or by building `SheetSpec` objects in
+the notebook. `insertions=((200, 1),)` means "after base row 200 the other workbook has 1 extra row" and
+generalises to any number of insertions at any point.
+
+## Output
+
+| Sheet | Contents |
+|---|---|
+| `_Summary` | Per sheet: rows compared, row shift applied, skipped rows, cells compared, non-zero deltas, largest movement, category mismatches |
+| `_Issues` | Every category mismatch, blank-on-one-side, and type clash, with both values and both row numbers |
+| Mirrored sheets | Same names and shape as the inputs, deltas as the cell values, non-zero deltas highlighted |
+
+## Category alignment
+
+Categories are kept from the base workbook, but checked against the other one: exact match →
+normalised match (case, spacing, punctuation, so `Salaries & Wages` = `Salaries and Wages`) →
+`difflib` similarity ≥ `category_similarity` → otherwise **mismatch**, listed on `_Issues`. A mismatch
+means the two sheets disagree about what that row *is*, which makes the delta on that row meaningless —
+check these before circulating the numbers.
+
+## Run order
+
+1. Section 3 prints the row alignment around the insertion boundary. Confirm it.
+2. Section 4 inspects the real files: every sheet resolved, and the snow vintage sheets running exactly
+   one row longer than the base. Confirm it.
+3. Section 5 compares and writes.
+
+Section 7 self-tests the whole pipeline on generated workbooks with differences planted at the awkward
+places — the insertion boundary, the last row, a renamed category, a changed column A, a blank on one
+side — so you can verify it before pointing it at real data.
+
+Verified at full scale: 25 sheets, ~180k cells per workbook, about 13 seconds end to end.

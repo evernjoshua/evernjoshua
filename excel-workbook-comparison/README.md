@@ -7,6 +7,7 @@ Two tools in this folder:
 | `excel_workbook_comparison.ipynb` | **General diff.** Any two workbooks, every sheet, every cell. Produces a list of differences. |
 | `vintage_delta_comparison.ipynb` + `vintage_compare.py` | **Vintage reconciliation.** A declared layout (header blocks, category columns, a known row insertion) compared region by region, producing a workbook that mirrors the originals with deltas as the cell values. See [Vintage delta comparison](#vintage-delta-comparison). |
 | `roa_bridge.py` | **Explaining the result.** Rolls the differences up into the change in ROA and renders a one-page HTML summary, so a reader never opens the workbook. See [ROA bridge](#roa-bridge). |
+| `formula_trace.py` + `roa_explorer.py` | **Tracing the formula.** Reads the ROA formula itself, follows it down to the inputs that moved, names them from column B, and builds an interactive page where you tick components and the real formula is re-evaluated. See [Formula trace](#formula-trace-and-component-explorer). |
 
 ---
 
@@ -219,3 +220,71 @@ markers on that scale; the coloured bars are the changes between them.
 Colours are the blue↔red diverging pair, validated for colour-vision deficiency in both light and dark
 mode (worst-pair ΔE 21.6 light / 19.2 dark against a ≥8 target). Every bar is signed in its label, so
 colour never carries the meaning alone.
+
+
+---
+
+# Formula trace and component explorer
+
+The bridge assumes you can name the drivers. This reads them out of the workbook: it parses the ROA
+formula, walks its precedents, and finds the cells that actually changed.
+
+## Why re-evaluate instead of adding up
+
+ROA is a ratio, so its drivers are **not additive** — the effect of two changes together is not the
+sum of their separate effects. On the worked example the solo impacts sum to −12.196 bps while the
+true combined move is −12.055 bps: a 0.141 bps interaction term that a static waterfall has to either
+hide or arbitrarily allocate. Re-evaluating the real formula under a chosen subset is the only way to
+get an honest answer, which is what makes the interactive page worth building.
+
+## What it does
+
+```python
+import formula_trace as ft, roa_explorer as rx, vintage_compare as vc
+
+rmap = lambda r: r if r <= 200 else r + 1          # the inserted row: old 209 -> new 210
+
+old, new = ft.load_book("book_old.xlsx"), ft.load_book("book_snow.xlsx")
+traces = [ft.trace(old, new, f"Vintage {v}", 209, 3, row_map=rmap, label_col=2)
+          for v in range(1, 25)]
+for t in traces:
+    t.check()                                       # must reproduce both cached values, or it raises
+
+rx.write_html(rx.build_payload(traces), "roa_explorer.html")
+```
+
+**Components** are the individual lines that moved: a cell becomes one when it changed and nothing
+labelled below it changed. Subtotals like *Net income* and *Total revenue* are walked through rather
+than reported, so you get *Credit provision* and *Interest income* — the names from column B.
+
+`row_map` carries the inserted-row offset, so precedents on rows ≤ 200 compare 1:1 while the ROA cell
+itself compares 209 against 210.
+
+`Trace.check()` re-evaluates the rebuilt tree with all-old and all-new inputs and asserts both match
+the workbook's own cached values. If the formula was followed incorrectly it raises rather than
+returning a plausible wrong number.
+
+## The formula evaluator
+
+Supports arithmetic, comparison, `&`, `%`, ranges, cross-sheet and absolute references, and
+`SUM AVERAGE MIN MAX COUNT ABS SQRT POWER PRODUCT SIGN ROUND ROUNDUP ROUNDDOWN IF IFERROR IFNA`.
+
+It matches **Excel's** operator semantics, not mathematical convention: `^` is left-associative
+(`2^3^2` = 64) and unary minus binds tighter than it (`-A1^2` = 100).
+
+Anything else — `VLOOKUP`, whole-column references like `B:B`, an unparseable formula — raises with
+the construct named. `IFERROR` deliberately does **not** swallow those: an evaluator limitation
+propagates instead of being masked as a legitimate fallback value.
+
+**Formulas need `.xlsx`/`.xlsm`.** pyxlsb and xlrd expose cached values only, so a `.xlsb` must be
+saved as `.xlsx` before it can be traced; `load_book` refuses with that instruction. The value
+comparison still works on the original.
+
+## The page
+
+A tab per vintage; the ROA formula and both cell references; old, new, and live scenario ROA; and a
+table of changed components with a checkbox each. Ticking any combination re-evaluates the formula in
+the browser. Selecting everything lands exactly on the new ROA.
+
+The browser evaluator is cross-checked against the Python one over every subset of the components,
+with the JavaScript extracted from the shipped source so there is no second copy to drift.

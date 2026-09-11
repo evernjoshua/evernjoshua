@@ -6,6 +6,7 @@ Two tools in this folder:
 |---|---|
 | `excel_workbook_comparison.ipynb` | **General diff.** Any two workbooks, every sheet, every cell. Produces a list of differences. |
 | `vintage_delta_comparison.ipynb` + `vintage_compare.py` | **Vintage reconciliation.** A declared layout (header blocks, category columns, a known row insertion) compared region by region, producing a workbook that mirrors the originals with deltas as the cell values. See [Vintage delta comparison](#vintage-delta-comparison). |
+| `roa_bridge.py` | **Explaining the result.** Rolls the differences up into the change in ROA and renders a one-page HTML summary, so a reader never opens the workbook. See [ROA bridge](#roa-bridge). |
 
 ---
 
@@ -157,3 +158,64 @@ places — the insertion boundary, the last row, a renamed category, a changed c
 side — so you can verify it before pointing it at real data.
 
 Verified at full scale: 25 sheets, ~180k cells per workbook, about 13 seconds end to end.
+
+
+---
+
+# ROA bridge
+
+A delta workbook answers *what changed*. `roa_bridge.py` answers *so what* — it decomposes the change
+in return on assets into the line items that caused it, and renders a standalone HTML page.
+
+## The decomposition
+
+ROA = net income ÷ total assets, so a change in ROA has exactly two sources: the income moved, or the
+asset base moved.
+
+```
+ΔROA  =  Σᵢ (Δcontributionᵢ / A₀)   +   NI₁ × (1/A₁ − 1/A₀)
+         ^ what each P&L line did       ^ what the asset base did
+```
+
+The two halves sum to the total change **exactly**, with no residual — provided the named line items
+sum to net income. They often don't (a sheet has subtotals, or a line nobody mapped), so pass the
+workbook's own net income figures and the unexplained remainder appears as its own labelled step
+rather than being quietly spread across the others. `BridgeResult.check()` asserts the walk ties and
+raises if it doesn't.
+
+## Usage
+
+```python
+from roa_bridge import Line, build_bridge, write_html
+
+M = 1_000_000
+lines = [
+    #    label              base      other   sign  where it came from
+    Line("Interest income", 214.5*M, 212.4*M,  +1,  "Vintage Summary!C118"),
+    Line("Credit provision", 31.7*M,  34.5*M,  -1,  "Vintage Summary!C163"),
+    # ... costs take sign=-1 when the workbook stores them as positive numbers
+]
+res = build_bridge(lines, base_assets=4_250*M, other_assets=4_310*M,
+                   base_label="Production", other_label="UAT",
+                   caveats=["3 category labels did not match; those rows are excluded."])
+write_html(res, "roa_bridge.html")     # one self-contained file, no assets to ship alongside
+```
+
+`Line.sign` is how the workbook's convention meets the arithmetic: pass `-1` for costs stored as
+positive numbers and the values are flipped for you, so a cost going *up* correctly reads as ROA going
+*down*.
+
+## The page
+
+Hero ΔROA in basis points, a horizontal waterfall from opening to closing ROA, the same steps ranked in
+money with the cell each came from, and a "before you rely on this" block for the caveats you pass in —
+category mismatches and alignment problems belong there, because a mismatched category makes that row's
+delta meaningless.
+
+The waterfall's axis is **truncated, and says so**: the steps are single-digit bps on a level of a few
+hundred, so a zero-anchored axis makes every step invisible. Opening and closing ROA are drawn as level
+markers on that scale; the coloured bars are the changes between them.
+
+Colours are the blue↔red diverging pair, validated for colour-vision deficiency in both light and dark
+mode (worst-pair ΔE 21.6 light / 19.2 dark against a ≥8 target). Every bar is signed in its label, so
+colour never carries the meaning alone.

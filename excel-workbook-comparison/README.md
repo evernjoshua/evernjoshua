@@ -7,7 +7,7 @@ Two tools in this folder:
 | `excel_workbook_comparison.ipynb` | **General diff.** Any two workbooks, every sheet, every cell. Produces a list of differences. |
 | `vintage_delta_comparison.ipynb` + `vintage_compare.py` | **Vintage reconciliation.** A declared layout (header blocks, category columns, a known row insertion) compared region by region, producing a workbook that mirrors the originals with deltas as the cell values. See [Vintage delta comparison](#vintage-delta-comparison). |
 | `roa_bridge.py` | **Explaining the result.** Rolls the differences up into the change in ROA and renders a one-page HTML summary, so a reader never opens the workbook. See [ROA bridge](#roa-bridge). |
-| `formula_trace.py` + `roa_explorer.py` | **Tracing the formula.** Reads the ROA formula itself, follows it down to the inputs that moved, names them from column B, and builds an interactive page where you tick components and the real formula is re-evaluated. See [Formula trace](#formula-trace-and-component-explorer). |
+| `roa_analysis.ipynb` + `formula_trace.py` + `roa_explorer.py` | **Tracing the formula.** Reads the ROA formula itself, follows it down to the inputs that moved, names them from column B, and builds an interactive page where you tick components and the real formula is re-evaluated. See [Formula trace](#formula-trace-and-component-explorer). |
 
 ---
 
@@ -237,7 +237,18 @@ true combined move is −12.055 bps: a 0.141 bps interaction term that a static 
 hide or arbitrarily allocate. Re-evaluating the real formula under a chosen subset is the only way to
 get an honest answer, which is what makes the interactive page worth building.
 
-## What it does
+## Run it
+
+Open **`roa_analysis.ipynb`**, set the two paths in section 2, run all cells. Section 7 self-tests the
+whole chain on generated workbooks, so you can watch it work before your own files are ready.
+
+> **The workbooks must be genuine `.xlsx`.** Renaming `Report.xlsb` to `Report.xlsx` does **not**
+> work — they are different formats, and a renamed file will fail to open. Convert it properly:
+> *Excel → File → Save As → Excel Workbook (\*.xlsx)*. Formula text is simply not available through
+> `pyxlsb` or `xlrd`, so a `.xlsb` cannot be traced at all; `load_book` refuses with that
+> instruction. The value comparison still runs on the original `.xlsb`.
+
+Under the notebook:
 
 ```python
 import formula_trace as ft, roa_explorer as rx, vintage_compare as vc

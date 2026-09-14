@@ -321,6 +321,33 @@ The browser evaluator is cross-checked against the Python one over every subset 
 on a plain formula and on the real vintage chain (`MID`, `""` guards, blanks, text constants) — with
 the JavaScript extracted from the shipped source so there is no second copy to drift.
 
+## It refuses rather than guesses
+
+If the walk reaches a formula it cannot follow — the depth limit, the cell ceiling, an unsupported
+function — and the workbook has **no cached value** to fall back on, `trace` raises and that column is
+skipped with the cell named.
+
+The alternative, which the code used to do, is worse than it sounds: treating that cell as blank
+produces a ROA that looks perfectly reasonable, is wrong, and hides every input underneath it — so the
+component list comes back short and ticking components barely moves the figure. A refusal that names
+the cell and says "raise MAX_DEPTH" is the only safe answer.
+
+`Trace.verified` records whether the workbook carried a cached value to check against, and the page
+says so beside Old ROA. **Unverified means the figure was computed by this code and never compared to
+Excel** — re-save the workbooks so Excel stores its own values.
+
+## Why one line appears several times
+
+This ROA is cumulative: `SUM($D204:F204)` at M3 pulls in M1, M2 and M3. So one line item feeds the
+figure once per month to date, and the same name appears against three different cells. They are three
+different figures, not duplicates — the page carries a **Month** column to make that visible.
+
+## Diagnosing one cell
+
+`formula_trace.explain(old, new, sheet, row, col, row_map=...)` prints the whole chain underneath a
+cell: every precedent, its formula, what each workbook has cached, what this code computed, and which
+cells became components. Section 8 of the notebook wires it up — point it at a figure that looks wrong.
+
 ## Blank months
 
 A vintage carries one month fewer than the last: Vintage1 has 24, Vintage24 has one. The formulas

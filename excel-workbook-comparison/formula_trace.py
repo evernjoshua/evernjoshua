@@ -618,6 +618,7 @@ class Trace:
     notes: List[str] = field(default_factory=list)
     structural: List[StructuralChange] = field(default_factory=list)
     modelled_new: Optional[float] = None   # old formula driven by all-new inputs
+    verified: bool = False                 # did the workbook carry a cached value to check against
 
     @property
     def ref_old(self) -> str:
@@ -998,15 +999,33 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
                     sub, _ = rebuild(parse(f), sh, depth)
                     result = (sub, False)
                 except FormulaError as exc:
-                    notes.append(f"{sh}!{get_column_letter(c)}{r}: {exc} - held blank")
-                    result = (Node("blank"), False)
+                    visiting.discard(key)
+                    if getattr(exc, "located", False):
+                        raise                       # already names the cell it failed at
+                    err = FormulaError(
+                        f"{sh}!{get_column_letter(c)}{r} ({lab or 'no label'}) could not be "
+                        f"followed: {exc}. It holds a formula and the workbook has no cached "
+                        "value for it, so there is nothing to fall back on - treating it as "
+                        "blank would produce a plausible but wrong figure.")
+                    err.located = True
+                    raise err from exc
                 finally:
                     visiting.discard(key)
+            elif f is not None:
+                # We stopped short of a formula we cannot substitute for. Refusing is the only
+                # safe answer: a fabricated blank flows up into a ROA that looks reasonable and
+                # is not, and hides every input underneath it.
+                why = (f"the depth limit ({max_depth})" if depth >= max_depth
+                       else f"the cell limit ({max_cells:,})")
+                err = FormulaError(
+                    f"{sh}!{get_column_letter(c)}{r} ({lab or 'no label'}) is a formula the walk "
+                    f"stopped at because of {why}, and the workbook has no cached value for it. "
+                    f"Raise MAX_DEPTH (currently {max_depth}) so the chain can be followed to its "
+                    "inputs - stopping here would report a wrong ROA.")
+                err.located = True
+                raise err
             elif _blankish(ov):
-                if f is not None and entered[0] >= max_cells:
-                    notes.append(f"stopped at {sh}!{get_column_letter(c)}{r} "
-                                 f"(cell limit {max_cells:,}) - held blank")
-                result = (Node("blank"), False)          # blank, not zero: "" comparisons depend on it
+                result = (Node("blank"), False)          # genuinely empty: "" comparisons need it
             else:
                 notes.append(f"{sh}!{get_column_letter(c)}{r} holds {ov!r}, not a number - held blank")
                 result = (Node("blank"), False)
@@ -1025,8 +1044,15 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
             if f is not None:
                 why = (f"depth limit {max_depth}" if depth >= max_depth
                        else f"cell limit {max_cells:,}")
+                if ov_n is None and nv_n is None:
+                    err = FormulaError(
+                        f"{sh}!{get_column_letter(c)}{r} ({lab or 'no label'}) is a formula the "
+                        f"walk stopped at ({why}) with no cached value on either side, so it "
+                        "cannot stand in for what is underneath it. Raise MAX_DEPTH.")
+                    err.located = True
+                    raise err
                 notes.append(f"stopped at {sh}!{get_column_letter(c)}{r} ({why}) - "
-                             "anything below it is folded into this component")
+                             "its cached value is used and anything below it is folded in")
             result = (add_component(sh, r, c, ov_n, nv_n, depth, lab), bool(lab))
             memo[key] = result
             return result
@@ -1077,6 +1103,7 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
             "formula's IF(...=\"\",\"\") guard fires, so this month carries no data and there "
             "is nothing to decompose.")
 
+    result.verified = result.value_old is not None
     if result.value_old is None or result.value_new is None:
         notes.append(
             f"{sheet} carries no cached value at the ROA cell, so both figures below are "
@@ -1243,3 +1270,87 @@ def trace_columns(old: Book, new: Book, sheet: str, row: int, cols: Iterable[int
             continue
         traces.append(tr)
     return traces, failures
+
+
+def explain(old: Book, new: Book, sheet: str, row: int, col: int,
+            row_map: Optional[Callable[[int], int]] = None, label_col: int = 2,
+            max_depth: int = 10, sheet_new: Optional[str] = None,
+            tol: float = 1e-9, show_ranges: int = 6) -> None:
+    """Print the whole chain under one cell, so a wrong figure can be traced by eye.
+
+    For every precedent: its label, its formula, what each workbook has cached for it, what
+    this code computed, and whether it was treated as a component. That is enough to see
+    where a modelled figure diverges from the sheet.
+    """
+    rmap = row_map or (lambda r: r)
+    sheet_b = sheet_new or sheet
+    seen: Set[Tuple[str, int, int]] = set()
+
+    def lab(sh, r):
+        v = old.value(sh, r, label_col)
+        return str(v).strip() if v is not None and str(v).strip() else ""
+
+    def fmt(v):
+        if v is None:
+            return "(blank)"
+        if isinstance(v, float):
+            return f"{v:,.6f}".rstrip("0").rstrip(".")
+        return repr(v)
+
+    def walk(sh, r, c, depth, prefix, last):
+        ref = f"{get_column_letter(c)}{r}"
+        key = (sh, r, c)
+        ov = old.value(sh, r, c)
+        nv = new.value(sheet_b if sh == sheet else sh, rmap(r), c)
+        f = old.formula(sh, r, c)
+        changed = not _same(ov, nv, tol)
+        branch = "└─ " if last else "├─ "
+        head = prefix + (branch if depth else "")
+        mark = "CHANGED" if changed else "same"
+        print(f"{head}{ref:<7} {lab(sh, r)[:34]:<34} [{mark}]")
+        pad = prefix + ("   " if last else "│  ") if depth else ""
+        print(f"{pad}      old={fmt(ov)}   new={fmt(nv)}")
+        if f:
+            print(f"{pad}      {f[:150]}")
+        if key in seen:
+            print(f"{pad}      (already shown above)")
+            return
+        seen.add(key)
+        if not f or depth >= max_depth:
+            if changed and not f:
+                print(f"{pad}      -> COMPONENT (a plain value that differs)")
+            return
+        try:
+            kids = refs_in(parse(f), sh)
+        except FormulaError as exc:
+            print(f"{pad}      -> CANNOT PARSE: {exc}")
+            return
+        uniq, seen_k = [], set()
+        for k in kids:
+            if k not in seen_k:
+                seen_k.add(k); uniq.append(k)
+        if len(uniq) > show_ranges:
+            print(f"{pad}      ({len(uniq)} precedents; showing the first {show_ranges})")
+            uniq = uniq[:show_ranges]
+        for i, (ksh, kr, kc) in enumerate(uniq):
+            walk(ksh or sh, kr, kc, depth + 1, pad, i == len(uniq) - 1)
+
+    print(f"=== chain under {sheet}!{get_column_letter(col)}{row} "
+          f"(new workbook: {sheet_b}!{get_column_letter(col)}{rmap(row)}) ===\n")
+    walk(sheet, row, col, 0, "", True)
+
+    tr = trace(old, new, sheet, row, col, row_map=rmap, label_col=label_col,
+               max_depth=max_depth, sheet_new=sheet_b)
+    print(f"\n=== what the model made of it ===")
+    print(f"   workbook cached : old={fmt(old.value(sheet, row, col))}  "
+          f"new={fmt(new.value(sheet_b, rmap(row), col))}")
+    print(f"   model computed  : old={fmt(tr.evaluate_with(set()))}  "
+          f"new={fmt(tr.modelled_new)}")
+    verified = old.value(sheet, row, col) is not None
+    print(f"   verified against the workbook: "
+          f"{'yes - check() compares them' if verified else 'NO - the workbook has no cached value here'}")
+    print(f"\n=== {len(tr.components)} components ===")
+    for c in tr.components:
+        print(f"   {c.ref_old:<7} {c.label[:38]:<38} {fmt(c.old):>14} -> {fmt(c.new):>14}")
+    for n in tr.notes:
+        print(f"\n   NOTE: {n[:220]}")

@@ -42,7 +42,8 @@ def _dedupe_structural(changes) -> List[Dict[str, Any]]:
 def build_payload(traces: Sequence[Trace],
                   names: Optional[Sequence[str]] = None,
                   groups: Optional[Sequence[str]] = None,
-                  items: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+                  items: Optional[Sequence[str]] = None,
+                  month_of: Optional[Dict[int, Any]] = None) -> Dict[str, Any]:
     """Turn traces into the JSON the page evaluates against.
 
     `groups` and `items` give the page its two selectors - vintage sheet and month.
@@ -57,6 +58,7 @@ def build_payload(traces: Sequence[Trace],
             comps.append({
                 "id": c.key, "label": c.label,
                 "refOld": c.ref_old, "refNew": c.ref_new,
+                "month": str((month_of or {}).get(c.col, "")),
                 "old": c.old, "new": c.new, "delta": c.delta,
                 "solo": None if solo is None else solo * BPS, "labelled": c.labelled,
                 "formula": c.formula or "",
@@ -76,6 +78,7 @@ def build_payload(traces: Sequence[Trace],
             "notes": tr.notes,
             "modelled": tr.modelled_new,
             "blank": tr.is_blank,
+            "verified": tr.verified,
             "gap": (tr.structural_gap * BPS) if tr.structural_gap is not None else None,
             "structural": _dedupe_structural(tr.structural),
         })
@@ -134,7 +137,8 @@ CSS = """
 .rx-stat .v{font-size:24px;font-weight:600;line-height:1.1}
 .rx-stat.lead .v{font-size:42px;letter-spacing:-.02em}
 .rx-stat .v.up{color:var(--up)} .rx-stat .v.down{color:var(--down)}
-.rx-stat .n{font-size:12.5px;color:var(--ink-3)}
+.rx-stat .n{font-size:12.5px;color:var(--ink-3);max-width:20ch}
+.rx-stat .n.warn{color:var(--down);font-weight:500}
 
 .rx-meter{display:flex;flex-direction:column;gap:7px}
 .rx-track{position:relative;height:8px;background:var(--rule);border-radius:4px}
@@ -330,6 +334,10 @@ JS = r"""
     var nsel = v.components.filter(function(c){return picked[c.id]}).length;
 
     el("rx-old").textContent = pct(oldR);
+    var vf = el("rx-verified");
+    if (v.verified) { vf.textContent = "read from the workbook and matched"; vf.className = "n"; }
+    else { vf.textContent = "NOT verified - the workbook stored no value here, so this is computed";
+           vf.className = "n warn"; }
     el("rx-new").textContent = pct(newR);
     el("rx-scn").textContent = pct(scenario);
     var lead = el("rx-lead");
@@ -365,6 +373,7 @@ JS = r"""
       return '<tr id="'+rid+'" data-id="'+encodeURIComponent(c.id)+'">'
         + '<td class="chk"><input type="checkbox" id="cb-'+rid+'" aria-label="Apply '+c.label+'"></td>'
         + '<td class="name">'+c.label+'</td>'
+        + '<td class="ref rx-mono">'+(c.month||"")+'</td>'
         + '<td class="ref rx-mono">'+c.refOld+(c.refOld!==c.refNew?" → "+c.refNew:"")+'</td>'
         + '<td class="n rx-num rx-mono">'+c.old.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</td>'
         + '<td class="n rx-num rx-mono">'+c.new.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</td>'
@@ -469,9 +478,11 @@ def render_html(payload: Dict[str, Any], title: str = "ROA component explorer",
       <span class="v roa-num" id="rx-lead">&mdash;</span>
       <span class="n" id="rx-of"></span></div>
     <div class="rx-stat"><span class="k">Old ROA</span>
-      <span class="v rx-num rx-mono" id="rx-old">&mdash;</span><span class="n">current process</span></div>
+      <span class="v rx-num rx-mono" id="rx-old">&mdash;</span>
+      <span class="n" id="rx-verified">current process</span></div>
     <div class="rx-stat"><span class="k">With selection</span>
-      <span class="v rx-num rx-mono" id="rx-scn">&mdash;</span><span class="n">recomputed from the formula</span></div>
+      <span class="v rx-num rx-mono" id="rx-scn">&mdash;</span>
+      <span class="n">the ROA formula re-run with the ticked lines switched to snow</span></div>
     <div class="rx-stat"><span class="k">New ROA</span>
       <span class="v rx-num rx-mono" id="rx-new">&mdash;</span><span class="n">snow process</span></div>
   </div>
@@ -500,7 +511,7 @@ def render_html(payload: Dict[str, Any], title: str = "ROA component explorer",
     <span class="rx-count" id="rx-count"></span>
   </div>
   <div class="rx-tablewrap" style="margin-top:10px"><table>
-    <thead><tr><th></th><th>Component</th><th>Cell</th><th class="n">Old</th><th class="n">New</th>
+    <thead><tr><th></th><th>Component</th><th>Month</th><th>Cell</th><th class="n">Old</th><th class="n">New</th>
       <th class="n">Change</th><th class="n">Solo effect</th></tr></thead>
     <tbody id="rx-body"></tbody>
   </table></div>

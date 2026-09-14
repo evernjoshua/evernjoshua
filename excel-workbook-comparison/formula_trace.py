@@ -30,8 +30,9 @@ from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string, get_column_letter
 
 __all__ = [
-    "FormulaError", "UnsupportedFormula", "parse", "evaluate", "Node",
-    "Book", "load_book", "Cell", "Component", "Trace", "trace", "compile_scenario",
+    "FormulaError", "UnsupportedFormula", "parse", "evaluate", "Node", "remap_rows",
+    "Book", "load_book", "Component", "StructuralChange", "Trace", "trace",
+    "compile_scenario", "trace_columns",
 ]
 
 
@@ -261,6 +262,23 @@ def _num(v: Any) -> float:
     raise FormulaError(f"cannot use {type(v).__name__} as a number")
 
 
+def _text(v: Any) -> str:
+    """Excel's text coercion: blank is "", whole numbers lose the .0, booleans go upper case."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
+
+
+def _mid(text: str, start: int, count: int) -> str:
+    if start < 1:
+        raise FormulaError("MID: start position must be 1 or more")
+    return text[start - 1: start - 1 + max(count, 0)]
+
+
 def _flat(values: Iterable[Any]) -> List[Any]:
     out: List[Any] = []
     for v in values:
@@ -293,6 +311,19 @@ FUNCTIONS: Dict[str, Callable[[List[Any]], Any]] = {
     "ROUNDDOWN": lambda a: math.floor(_num(a[0]) * 10 ** int(_num(a[1]))) / 10 ** int(_num(a[1])),
     "PRODUCT":  lambda a: math.prod(_numbers(a)) if _numbers(a) else 0.0,
     "SIGN":     lambda a: float((_num(a[0]) > 0) - (_num(a[0]) < 0)),
+    # text - the vintage ROA formula pulls the month number out of the "M6" header
+    "MID":      lambda a: _mid(_text(a[0]), int(_num(a[1])), int(_num(a[2]))),
+    "LEFT":     lambda a: _text(a[0])[:int(_num(a[1])) if len(a) > 1 else 1],
+    "RIGHT":    lambda a: _text(a[0])[-(int(_num(a[1])) if len(a) > 1 else 1):] or "",
+    "LEN":      lambda a: float(len(_text(a[0]))),
+    "TRIM":     lambda a: " ".join(_text(a[0]).split()),
+    "UPPER":    lambda a: _text(a[0]).upper(),
+    "LOWER":    lambda a: _text(a[0]).lower(),
+    "VALUE":    lambda a: _num(_text(a[0])),
+    "CONCATENATE": lambda a: "".join(_text(v) for v in _flat(a)),
+    "CONCAT":   lambda a: "".join(_text(v) for v in _flat(a)),
+    "N":        lambda a: _num(a[0]),
+    "T":        lambda a: a[0] if isinstance(a[0], str) else "",
 }
 LAZY_FUNCTIONS = {"IF", "IFERROR", "IFNA"}          # evaluated by the walker, not the table above
 
@@ -306,11 +337,38 @@ _COMPARE = {
 }
 
 
+def _compare(op: str, a: Any, b: Any) -> bool:
+    """Excel's rules, which are not Python's.
+
+    An empty cell equals both "" and 0. Text and numbers are never equal to each other,
+    and in an ordering comparison every number sorts below every piece of text.
+    """
+    if a is None and b is None:
+        return _COMPARE[op](0, 0)
+    if a is None:
+        a = "" if isinstance(b, str) else (False if isinstance(b, bool) else 0.0)
+    if b is None:
+        b = "" if isinstance(a, str) else (False if isinstance(a, bool) else 0.0)
+
+    a_txt, b_txt = isinstance(a, str), isinstance(b, str)
+    if a_txt and b_txt:
+        return _COMPARE[op](a.casefold(), b.casefold())
+    if a_txt != b_txt:                       # a number is never equal to text; numbers sort first
+        if op == "=":
+            return False
+        if op == "<>":
+            return True
+        return _COMPARE[op](1 if a_txt else 0, 1 if b_txt else 0)
+    return _COMPARE[op](_num(a), _num(b))
+
+
 def evaluate(node: Node, resolve: Callable[[Optional[str], int, int], Any],
              sheet: Optional[str] = None) -> Any:
     """Evaluate an AST. `resolve(sheet, row, col)` returns one cell's value."""
     k = node.kind
 
+    if k == "blank":
+        return None
     if k in ("num", "str", "bool"):
         return node.value
     if k == "err":
@@ -340,20 +398,12 @@ def evaluate(node: Node, resolve: Callable[[Optional[str], int, int], Any],
     if k == "binop":
         op = node.value
         if op == "&":
-            def txt(v):
-                if v is None:
-                    return ""
-                if isinstance(v, float) and v.is_integer():
-                    return str(int(v))
-                return str(v)
-            return txt(evaluate(node.args[0], resolve, sheet)) + \
-                   txt(evaluate(node.args[1], resolve, sheet))
+            return _text(evaluate(node.args[0], resolve, sheet)) + \
+                   _text(evaluate(node.args[1], resolve, sheet))
         a = evaluate(node.args[0], resolve, sheet)
         b = evaluate(node.args[1], resolve, sheet)
         if op in _COMPARE:
-            if isinstance(a, str) or isinstance(b, str):
-                return _COMPARE[op](str(a).casefold(), str(b).casefold())
-            return _COMPARE[op](_num(a), _num(b))
+            return _compare(op, a, b)
         x, y = _num(a), _num(b)
         if op == "+": return x + y
         if op == "-": return x - y
@@ -475,8 +525,8 @@ class Component:
     row_new: int
     col: int
     label: str                  # from the label column, or the cell ref when there isn't one
-    old: float
-    new: float
+    old: Optional[float]
+    new: Optional[float]
     depth: int
     labelled: bool
     formula: Optional[str] = None
@@ -491,7 +541,35 @@ class Component:
 
     @property
     def delta(self) -> float:
-        return self.new - self.old
+        return (self.new or 0.0) - (self.old or 0.0)
+
+    @property
+    def blank_side(self) -> str:
+        if self.old is None:
+            return "old"
+        return "new" if self.new is None else ""
+
+
+@dataclass
+class StructuralChange:
+    """A cell whose formula differs between the workbooks once the row shift is allowed for."""
+    sheet: str
+    ref_old: str
+    ref_new: str
+    formula_old: str
+    formula_new: str
+    label: str = ""
+    kind: str = "formula rewritten"
+    extra_rows: List[int] = field(default_factory=list)   # rows the new range covers and the old did not
+    extra_detail: str = ""
+
+    def describe(self) -> str:
+        if self.kind == "range widened":
+            return (f"{self.label or self.ref_old}: the range now also covers "
+                    f"row{'s' if len(self.extra_rows) > 1 else ''} "
+                    f"{', '.join(str(r) for r in self.extra_rows)} of the new workbook"
+                    + (f" ({self.extra_detail})" if self.extra_detail else ""))
+        return f"{self.label or self.ref_old}: formula rewritten"
 
 
 @dataclass
@@ -507,6 +585,8 @@ class Trace:
     components: List[Component]
     tree: Node                  # the formula, rebuilt with components as parameters
     notes: List[str] = field(default_factory=list)
+    structural: List[StructuralChange] = field(default_factory=list)
+    modelled_new: Optional[float] = None   # old formula driven by all-new inputs
 
     @property
     def ref_old(self) -> str:
@@ -525,20 +605,31 @@ class Trace:
         picked = {c.key: (c.new if c.key in selected else c.old) for c in self.components}
         return float(_eval_scenario(self.tree, picked))
 
+    @property
+    def structural_gap(self) -> Optional[float]:
+        """New ROA the workbook reports, less what the old formula makes of all-new inputs.
+
+        Anything other than zero means the calculation itself changed shape - a formula
+        rewritten, or a range that now spans an inserted row - rather than only its inputs
+        moving. That part of the move cannot be attributed to any component.
+        """
+        if self.value_new is None or self.modelled_new is None:
+            return None
+        return self.value_new - self.modelled_new
+
     def check(self, tol: float = 1e-6) -> None:
-        """All-old must reproduce the old cached value; all-new the new one."""
-        got_old = self.evaluate_with(set())
-        got_new = self.evaluate_with({c.key for c in self.components})
-        for got, want, which in ((got_old, self.value_old, "old"), (got_new, self.value_new, "new")):
-            if want is None:
-                continue
-            scale = max(abs(want), 1.0)
-            if abs(got - want) / scale > tol:
+        """The old side must reconcile exactly, or the formula was followed incorrectly.
+
+        The new side is *reported*, not asserted: a gap there is a real finding about the
+        workbooks (the calculation changed shape), not a bug in the trace.
+        """
+        if self.value_old is not None:
+            got = self.evaluate_with(set())
+            if abs(got - self.value_old) / max(abs(self.value_old), 1.0) > tol:
                 raise AssertionError(
-                    f"trace does not reproduce the {which} value at {self.sheet}!"
-                    f"{self.ref_old if which == 'old' else self.ref_new}: re-evaluated {got!r}, "
-                    f"workbook says {want!r}. The formula was followed incorrectly - do not trust "
-                    "the component impacts.")
+                    f"trace does not reproduce the old value at {self.sheet}!{self.ref_old}: "
+                    f"re-evaluated {got!r}, workbook says {self.value_old!r}. The formula was "
+                    "followed incorrectly - do not trust the component impacts.")
 
 
 def _eval_scenario(node: Node, picked: Dict[str, float]) -> Any:
@@ -551,10 +642,11 @@ def _eval_scenario(node: Node, picked: Dict[str, float]) -> Any:
 
 def _eval_scenario_node(node: Node, picked: Dict[str, float]) -> Node:
     if node.kind == "param":
-        return Node("num", float(picked[node.value]))
+        v = picked[node.value]
+        return Node("blank") if v is None else Node("num", float(v))
     if node.kind == "list":
         return Node("list", None, [_eval_scenario_node(a, picked) for a in node.args])
-    if node.kind in ("num", "str", "bool", "err"):
+    if node.kind in ("num", "str", "bool", "err", "blank"):
         return node
     return Node(node.kind, node.value, [_eval_scenario_node(a, picked) for a in node.args],
                 node.sheet, node.coord)
@@ -564,12 +656,39 @@ def _is_num(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _blankish(v: Any) -> bool:
+    """Excel treats an empty cell and a formula returning "" the same way. So do we."""
+    return v is None or (isinstance(v, str) and v.strip() == "")
+
+
+def remap_rows(text: str, rmap: Callable[[int], int]) -> str:
+    """Rewrite the row numbers in a formula's references through the row map.
+
+    Lets an old formula be compared against the new one on equal terms: if the only
+    difference is the inserted row, the remapped old text and the new text match.
+    String literals are left alone, so "M1" is never mistaken for a reference.
+    """
+    src = text[1:] if text.startswith("=") else text
+    out, i = [], 0
+    for tok in tokenize(src):
+        out.append(src[i:tok.pos])
+        if tok.kind in ("ref", "range"):
+            def sub(m):
+                return f"{m.group(1)}{rmap(int(m.group(2)))}"
+            out.append(re.sub(r"(\$?[A-Za-z]{1,3}\$?)(\d{1,7})", sub, tok.text))
+        else:
+            out.append(tok.text)
+        i = tok.pos + len(tok.text)
+    out.append(src[i:])
+    return "=" + "".join(out)
+
+
 def _same(a: Any, b: Any, tol: float) -> bool:
+    if _blankish(a) and _blankish(b):
+        return True
     if _is_num(a) and _is_num(b):
         return abs(float(a) - float(b)) <= tol
-    if a is None and b is None:
-        return True
-    if (a is None) != (b is None):
+    if _blankish(a) != _blankish(b):
         return False
     return str(a).strip().casefold() == str(b).strip().casefold()
 
@@ -590,6 +709,7 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
     sheet_b = sheet_new or sheet
     notes: List[str] = []
     components: Dict[str, Component] = {}
+    structural: List[StructuralChange] = []
     memo: Dict[Tuple[str, int, int], Tuple[Node, bool]] = {}
     visiting: Set[Tuple[str, int, int]] = set()
 
@@ -603,8 +723,9 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
             components[key] = Component(
                 key=key, sheet=sh, row_old=r, row_new=rmap(r), col=c,
                 label=lab or f"{get_column_letter(c)}{r}",
-                old=float(ov or 0), new=float(nv or 0), depth=depth, labelled=bool(lab),
-                formula=old.formula(sh, r, c))
+                old=None if ov is None else float(ov),
+                new=None if nv is None else float(nv),
+                depth=depth, labelled=bool(lab), formula=old.formula(sh, r, c))
         return Node("param", key)
 
     def rebuild(node: Node, sh: str, depth: int) -> Tuple[Node, bool]:
@@ -628,6 +749,66 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
             found = found or f
         return Node(node.kind, node.value, kids, node.sheet, node.coord), found
 
+    def norm_formula(t: str) -> str:
+        return re.sub(r"\s+", "", t or "").upper()
+
+    def ranges_of(node: Node) -> List[Node]:
+        out = [node] if node.kind == "range" else []
+        for a in node.args:
+            out += ranges_of(a)
+        return out
+
+    def note_structural(sh: str, r: int, c: int, sh_new: str, f_old, f_new) -> None:
+        if f_old is None and f_new is None:
+            return
+        ref_old = f"{get_column_letter(c)}{r}"
+        ref_new = f"{get_column_letter(c)}{rmap(r)}"
+        lab = label_of(sh, r)
+
+        if f_old is None or f_new is None:
+            structural.append(StructuralChange(
+                sheet=sh, ref_old=ref_old, ref_new=ref_new,
+                formula_old=f_old or "(no formula - a plain value)",
+                formula_new=f_new or "(no formula - a plain value)", label=lab))
+            return
+
+        try:
+            remapped = remap_rows(f_old, rmap)
+        except FormulaError:
+            remapped = f_old
+        if norm_formula(remapped) != norm_formula(f_new):
+            structural.append(StructuralChange(
+                sheet=sh, ref_old=ref_old, ref_new=ref_new,
+                formula_old=f_old, formula_new=f_new, label=lab))
+            return
+
+        # The texts match after remapping - but a range that SPANS the inserted row grows by a
+        # row while reading identically, so it silently picks up a cell with no old counterpart.
+        try:
+            r_old, r_new = ranges_of(parse(f_old)), ranges_of(parse(f_new))
+        except FormulaError:
+            return
+        if len(r_old) != len(r_new):
+            return
+        for go, gn in zip(r_old, r_new):
+            (o1, oc1), (o2, oc2) = go.coord
+            (n1, nc1), (n2, nc2) = gn.coord
+            if {oc1, oc2} != {nc1, nc2}:
+                continue
+            covered = {rmap(x) for x in range(min(o1, o2), max(o1, o2) + 1)}
+            extra = sorted(set(range(min(n1, n2), max(n1, n2) + 1)) - covered)
+            if not extra:
+                continue
+            bits = []
+            for x in extra[:4]:
+                name = new.value(sh_new, x, label_col)
+                val = new.value(sh_new, x, min(nc1, nc2))
+                bits.append(f"row {x} {str(name).strip()!r}" + (f" = {val:,.2f}" if _is_num(val) else ""))
+            structural.append(StructuralChange(
+                sheet=sh, ref_old=ref_old, ref_new=ref_new,
+                formula_old=f_old, formula_new=f_new, label=lab,
+                kind="range widened", extra_rows=extra, extra_detail="; ".join(bits)))
+
     def visit(sh: str, r: int, c: int, depth: int) -> Tuple[Node, bool]:
         key = (sh, r, c)
         if key in memo:
@@ -635,49 +816,54 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
         if key in visiting:
             raise FormulaError(f"circular reference at {sh}!{get_column_letter(c)}{r}")
 
+        sh_new = sheet_b if sh == sheet else sh
         ov = old.value(sh, r, c)
-        nv = new.value(sheet_b if sh == sheet else sh, rmap(r), c)
+        nv = new.value(sh_new, rmap(r), c)
         lab = label_of(sh, r)
+        f = old.formula(sh, r, c)
+        note_structural(sh, r, c, sh_new, f, new.formula(sh_new, rmap(r), c))
 
         if _same(ov, nv, tol):
-            # Unchanged: freeze it. Prefer the cached value; if the workbook carries none
-            # (it was written by a script and never recalculated), compute it from the
-            # formula instead of silently freezing the cell at zero.
+            # Keep the value's TYPE, not just its number. Formulas branch on text -
+            # IF(D5="M1", ...) reads the month header - so a text constant that happens
+            # not to have changed must still be carried through as text.
             if _is_num(ov):
                 result = (Node("num", float(ov)), False)
+            elif isinstance(ov, bool):
+                result = (Node("bool", ov), False)
+            elif isinstance(ov, str) and not _blankish(ov):
+                result = (Node("str", ov), False)
+            elif f is not None and depth < max_depth:
+                visiting.add(key)
+                try:
+                    sub, _ = rebuild(parse(f), sh, depth)
+                    result = (sub, False)
+                except FormulaError as exc:
+                    notes.append(f"{sh}!{get_column_letter(c)}{r}: {exc} - held blank")
+                    result = (Node("blank"), False)
+                finally:
+                    visiting.discard(key)
+            elif _blankish(ov):
+                result = (Node("blank"), False)          # blank, not zero: "" comparisons depend on it
             else:
-                f_same = old.formula(sh, r, c)
-                if f_same is not None and depth < max_depth:
-                    visiting.add(key)
-                    try:
-                        sub, _ = rebuild(parse(f_same), sh, depth)
-                        result = (sub, False)
-                    except FormulaError as exc:
-                        notes.append(f"{sh}!{get_column_letter(c)}{r}: {exc} - held at zero")
-                        result = (Node("num", 0.0), False)
-                    finally:
-                        visiting.discard(key)
-                else:
-                    if ov is not None and not _is_num(ov):
-                        notes.append(f"{sh}!{get_column_letter(c)}{r} holds {ov!r}, "
-                                     "not a number - held at zero")
-                    result = (Node("num", 0.0), False)
+                notes.append(f"{sh}!{get_column_letter(c)}{r} holds {ov!r}, not a number - held blank")
+                result = (Node("blank"), False)
             memo[key] = result
             return result
 
-        if not (_is_num(ov) or ov is None) or not (_is_num(nv) or nv is None):
+        ov_n = None if _blankish(ov) else ov
+        nv_n = None if _blankish(nv) else nv
+        if not (_is_num(ov_n) or ov_n is None) or not (_is_num(nv_n) or nv_n is None):
             notes.append(f"{sh}!{get_column_letter(c)}{r} changed from {ov!r} to {nv!r} - "
                          "not a number, so it is held at its old value in the model")
-            result = (Node("num", 0.0), False)
-            memo[key] = result
-            return result
+            memo[key] = (Node("blank") if ov_n is None else Node("num", float(ov_n)), False)
+            return memo[key]
 
-        f = old.formula(sh, r, c)
         if f is None or depth >= max_depth:
             if f is not None:
                 notes.append(f"stopped at {sh}!{get_column_letter(c)}{r} (depth limit {max_depth}) - "
                              "anything below it is folded into this component")
-            result = (add_component(sh, r, c, ov, nv, depth, lab), bool(lab))
+            result = (add_component(sh, r, c, ov_n, nv_n, depth, lab), bool(lab))
             memo[key] = result
             return result
 
@@ -687,14 +873,13 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
         except FormulaError as exc:
             notes.append(f"{sh}!{get_column_letter(c)}{r}: {exc} - treated as a single component")
             visiting.discard(key)
-            result = (add_component(sh, r, c, ov, nv, depth, lab), bool(lab))
+            result = (add_component(sh, r, c, ov_n, nv_n, depth, lab), bool(lab))
             memo[key] = result
             return result
         visiting.discard(key)
 
-        # A labelled cell with nothing labelled below it IS the line that moved: stop here.
         if lab and not found_below:
-            result = (add_component(sh, r, c, ov, nv, depth, lab), True)
+            result = (add_component(sh, r, c, ov_n, nv_n, depth, lab), True)
             memo[key] = result
             return result
 
@@ -719,7 +904,8 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
         value_old=float(v_old) if _is_num(v_old) else None,
         value_new=float(v_new) if _is_num(v_new) else None,
         components=sorted(components.values(), key=lambda c: -abs(c.delta)),
-        tree=tree, notes=notes)
+        tree=tree, notes=notes, structural=structural)
+    result.modelled_new = result.evaluate_with({c.key for c in result.components})
 
     if result.value_old is None or result.value_new is None:
         notes.append(
@@ -730,18 +916,84 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
             result.value_old = result.evaluate_with(set())
         if result.value_new is None:
             result.value_new = result.evaluate_with({c.key for c in result.components})
-    if result.formula_changed:
-        result.notes.insert(0, "The ROA formula itself differs between the two workbooks. The "
-                               "decomposition below uses the old formula; compare them directly "
-                               "before reading the impacts.")
+    widened = [sc for sc in structural if sc.kind == "range widened"]
+    if widened:
+        result.notes.insert(0, (
+            f"{len(widened)} range(s) in the new workbook cover rows the old one does not - the "
+            "inserted row falls inside them, so those cells feed the new figure and have no "
+            "counterpart to be compared against. " + " ".join(sc.describe() for sc in widened[:3])))
+
+    gap = result.structural_gap
+    if gap is not None and abs(gap) > 1e-9:
+        result.notes.insert(0, (
+            f"{abs(gap) * 10_000:,.1f} bps of the move does not come from any component. The "
+            f"calculation itself changed shape between the workbooks - see the {len(structural)} "
+            "formula difference(s) listed. Driving the old formula with every new input reaches "
+            f"{result.modelled_new:.6%}, but the snow workbook reports {result.value_new:.6%}."))
     return result
 
 
+def _has_param(n: Node) -> bool:
+    return n.kind == "param" or any(_has_param(a) for a in n.args)
+
+
+def fold_constants(node: Node, _cache: Optional[Dict[int, Node]] = None) -> Node:
+    """Collapse every subtree that contains no component into a single literal.
+
+    Nearly all of a real formula tree is machinery that did not change - the months that
+    were already equal, the untouched expense lines. Pre-computing those turns thousands
+    of nodes into one number each, which is what keeps the page a sensible size.
+
+    The cache keeps one input node mapping to one output node, so the sharing the walk
+    established survives folding and the serialiser can still emit repeats by reference.
+    """
+    if _cache is None:
+        _cache = {}
+    hit = _cache.get(id(node))
+    if hit is not None:
+        return hit
+    if node.kind in ("param", "num", "str", "bool", "blank", "err"):
+        _cache[id(node)] = node
+        return node
+    folded = Node(node.kind, node.value, [fold_constants(a, _cache) for a in node.args],
+                  node.sheet, node.coord)
+    _cache[id(node)] = folded
+    if node.kind not in ("func", "binop", "unary") or _has_param(folded):
+        return folded
+    try:
+        v = evaluate(folded, lambda sh, r, c: None)
+    except FormulaError:
+        return folded                      # an error an enclosing IFERROR is meant to catch
+    if v is None:
+        lit = Node("blank")
+    elif isinstance(v, bool):
+        lit = Node("bool", v)
+    elif isinstance(v, (int, float)):
+        lit = Node("num", float(v))
+    elif isinstance(v, str):
+        lit = Node("str", v)
+    else:
+        return folded
+    _cache[id(node)] = lit
+    return lit
+
+
 def compile_scenario(tr: Trace) -> Dict[str, Any]:
-    """Serialise the scenario tree so a browser can re-evaluate it."""
+    """Serialise the scenario tree so a browser can re-evaluate it.
+
+    The walk memoises, so one cell reached by several paths is one Node object. Those are
+    emitted once into `defs` and referenced, instead of being written out at every
+    occurrence - a formula like IF(a-b=0,"",a-b) mentions the same subtree twice.
+    """
+    defs: List[Dict[str, Any]] = []
+    index: Dict[int, int] = {}
+    seen: Dict[int, int] = {}
+
     def pack(n: Node) -> Dict[str, Any]:
         if n.kind == "param":
             return {"k": "p", "id": n.value}
+        if n.kind == "blank":
+            return {"k": "z"}
         if n.kind in ("num", "bool"):
             return {"k": "n", "v": n.value}
         if n.kind == "str":
@@ -755,4 +1007,66 @@ def compile_scenario(tr: Trace) -> Dict[str, Any]:
         if n.kind == "func":
             return {"k": "f", "o": n.value, "a": [pack(a) for a in n.args]}
         raise UnsupportedFormula(f"cannot serialise node {n.kind!r}")
-    return pack(tr.tree)
+
+    def share(n: Node) -> Dict[str, Any]:
+        if n.kind in ("num", "str", "bool", "blank", "err", "param"):
+            return pack(n)
+        key = id(n)
+        if key in index:
+            return {"k": "r", "i": index[key]}
+        if seen.get(key):
+            slot = len(defs)
+            defs.append(None)                       # reserve, then fill after packing children
+            index[key] = slot
+            defs[slot] = pack_shared(n)
+            return {"k": "r", "i": slot}
+        seen[key] = 1
+        return pack_shared(n)
+
+    def pack_shared(n: Node) -> Dict[str, Any]:
+        if n.kind == "list":
+            return {"k": "l", "a": [share(a) for a in n.args]}
+        if n.kind == "binop":
+            return {"k": "b", "o": n.value, "a": [share(a) for a in n.args]}
+        if n.kind == "unary":
+            return {"k": "u", "o": n.value, "a": [share(a) for a in n.args]}
+        if n.kind == "func":
+            return {"k": "f", "o": n.value, "a": [share(a) for a in n.args]}
+        return pack(n)
+
+    def count(n: Node) -> None:
+        seen[id(n)] = seen.get(id(n), 0) + 1
+        if seen[id(n)] == 1:
+            for a in n.args:
+                count(a)
+
+    folded = fold_constants(tr.tree)
+    count(folded)
+    repeated = {k for k, v in seen.items() if v > 1}
+    seen = {k: 1 for k in repeated}                 # only share what actually repeats
+    root = share(folded)
+    return {"defs": defs, "root": root}
+
+
+def trace_columns(old: Book, new: Book, sheet: str, row: int, cols: Iterable[int],
+                  **kw) -> Tuple[List["Trace"], List[Tuple[str, str]]]:
+    """Trace the same row across many columns - one per month, in the vintage sheets.
+
+    Returns (traces, failures). A column that cannot be traced is reported with its reason
+    rather than dropping out of the result silently.
+    """
+    traces: List[Trace] = []
+    failures: List[Tuple[str, str]] = []
+    for c in cols:
+        ref = f"{get_column_letter(c)}{row}"
+        if old.formula(sheet, row, c) is None:
+            failures.append((ref, "no formula in the old workbook"))
+            continue
+        try:
+            tr = trace(old, new, sheet, row, c, **kw)
+            tr.check()
+        except (FormulaError, AssertionError) as exc:
+            failures.append((ref, str(exc)))
+            continue
+        traces.append(tr)
+    return traces, failures

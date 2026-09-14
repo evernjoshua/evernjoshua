@@ -275,13 +275,33 @@ itself compares 209 against 210.
 the workbook's own cached values. If the formula was followed incorrectly it raises rather than
 returning a plausible wrong number.
 
+## Two ways the number moves
+
+**Inputs moved** — a revenue or expense line changed. Those are the components.
+
+**The calculation changed shape** — a formula was rewritten, or a `SUM` range *spans the inserted
+row*, so `SUM(D197:D201)` becomes `SUM(D197:D202)` and picks up a cell with no counterpart in the old
+workbook. After the row shift those two formulas read **identically**, so comparing the text finds
+nothing; `trace` compares the ranges cell by cell instead and reports the rows that appeared.
+
+That second part belongs to no component, so it is reported as **unattributed bps** rather than being
+spread across the drivers.
+
 ## The formula evaluator
 
-Supports arithmetic, comparison, `&`, `%`, ranges, cross-sheet and absolute references, and
-`SUM AVERAGE MIN MAX COUNT ABS SQRT POWER PRODUCT SIGN ROUND ROUNDUP ROUNDDOWN IF IFERROR IFNA`.
+Supports arithmetic, comparison, `&`, `%`, ranges, cross-sheet and absolute references,
+`SUM AVERAGE MIN MAX COUNT ABS SQRT POWER PRODUCT SIGN ROUND ROUNDUP ROUNDDOWN IF IFERROR IFNA`,
+and the text functions `MID LEFT RIGHT LEN TRIM UPPER LOWER VALUE CONCAT CONCATENATE N T`.
+
+It follows **Excel's blank semantics**: an empty cell equals both `""` and `0`, and text is never
+equal to a number. `IF(D207="","",…)` therefore behaves as it does in the sheet.
 
 It matches **Excel's** operator semantics, not mathematical convention: `^` is left-associative
 (`2^3^2` = 64) and unary minus binds tighter than it (`-A1^2` = 100).
+
+Unchanged **text** constants are carried through as text, not collapsed to a number — formulas branch
+on them (`IF(D5="M1", …)` reads the month header), so losing the type would silently take the wrong
+branch.
 
 Anything else — `VLOOKUP`, whole-column references like `B:B`, an unparseable formula — raises with
 the construct named. `IFERROR` deliberately does **not** swallow those: an evaluator limitation
@@ -297,5 +317,13 @@ A tab per vintage; the ROA formula and both cell references; old, new, and live 
 table of changed components with a checkbox each. Ticking any combination re-evaluates the formula in
 the browser. Selecting everything lands exactly on the new ROA.
 
-The browser evaluator is cross-checked against the Python one over every subset of the components,
-with the JavaScript extracted from the shipped source so there is no second copy to drift.
+The browser evaluator is cross-checked against the Python one over every subset of the components —
+on a plain formula and on the real vintage chain (`MID`, `""` guards, blanks, text constants) — with
+the JavaScript extracted from the shipped source so there is no second copy to drift.
+
+## Page size
+
+Each sheet-month combination carries its own formula tree. Two things keep that affordable: subtrees
+with no component in them are pre-computed to a single literal, and a subtree reached by several paths
+is emitted once and referenced. Together those take a combination from 93 KB to 23 KB. 24 sheets × 6
+months lands around 1.7 MB; all 24 months is roughly 13 MB, fine to open locally but large to email.

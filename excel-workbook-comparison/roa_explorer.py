@@ -25,8 +25,28 @@ def _esc(s: Any) -> str:
     return html.escape(str(s), quote=True)
 
 
-def build_payload(traces: Sequence[Trace], names: Optional[Sequence[str]] = None) -> Dict[str, Any]:
-    """Turn traces into the JSON the page evaluates against."""
+def _dedupe_structural(changes) -> List[Dict[str, Any]]:
+    """One entry per distinct finding. The same widened range shows up in all 24 month columns."""
+    out, seen = [], set()
+    for sc in changes:
+        key = (sc.label, sc.kind, sc.describe())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"label": sc.label or sc.ref_old, "refOld": sc.ref_old, "refNew": sc.ref_new,
+                    "kind": sc.kind, "old": sc.formula_old, "new": sc.formula_new,
+                    "detail": sc.describe()})
+    return out
+
+
+def build_payload(traces: Sequence[Trace],
+                  names: Optional[Sequence[str]] = None,
+                  groups: Optional[Sequence[str]] = None,
+                  items: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    """Turn traces into the JSON the page evaluates against.
+
+    `groups` and `items` give the page its two selectors - vintage sheet and month.
+    """
     out = []
     for i, tr in enumerate(traces):
         base = tr.evaluate_with(set())
@@ -43,6 +63,8 @@ def build_payload(traces: Sequence[Trace], names: Optional[Sequence[str]] = None
         comps.sort(key=lambda d: -abs(d["solo"]))
         out.append({
             "name": (names[i] if names and i < len(names) else tr.sheet),
+            "group": (groups[i] if groups and i < len(groups) else tr.sheet),
+            "item": (items[i] if items and i < len(items) else tr.ref_old),
             "sheet": tr.sheet,
             "refOld": tr.ref_old, "refNew": tr.ref_new,
             "formulaOld": tr.formula_old or "", "formulaNew": tr.formula_new or "",
@@ -51,6 +73,9 @@ def build_payload(traces: Sequence[Trace], names: Optional[Sequence[str]] = None
             "tree": compile_scenario(tr),
             "components": comps,
             "notes": tr.notes,
+            "modelled": tr.modelled_new,
+            "gap": (tr.structural_gap * BPS) if tr.structural_gap is not None else None,
+            "structural": _dedupe_structural(tr.structural),
         })
     return {"vintages": out, "generated": dt.datetime.now().strftime("%Y-%m-%d %H:%M")}
 
@@ -87,7 +112,12 @@ CSS = """
 .rx-title{font-size:28px;line-height:1.2;font-weight:600;margin:0;text-wrap:balance}
 .rx-sub{color:var(--ink-2);font-size:14px;margin:0}
 
-.rx-tabs{display:flex;flex-wrap:wrap;gap:6px}
+.rx-tabs{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end}
+.rx-pick{display:flex;flex-direction:column;gap:4px}
+.rx-pick label{font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+.rx-pick select{font:inherit;font-size:14px;padding:6px 10px;border:1px solid var(--rule);
+  border-radius:3px;background:var(--surface);color:var(--ink);min-width:170px}
+.rx-pick select:focus-visible{outline:2px solid var(--up);outline-offset:2px}
 .rx-tab{font:inherit;font-size:13px;padding:5px 13px;border:1px solid var(--rule);
   background:var(--surface);color:var(--ink-2);border-radius:3px;cursor:pointer}
 .rx-tab:hover{background:var(--hover)}
@@ -141,6 +171,9 @@ CSS = """
 .rx-sec-h{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);
   font-weight:600;margin:0 0 3px}
 .rx-sec-n{color:var(--ink-2);font-size:13.5px;margin:0 0 14px;max-width:68ch}
+.rx-struct-list{display:flex;flex-direction:column;gap:14px}
+.rx-struct-row{display:flex;flex-direction:column;gap:5px;border-left:2px solid var(--down);padding-left:12px}
+.rx-struct-head{font-size:13.5px;color:var(--ink)}
 .rx-note{display:flex;gap:10px;font-size:13.5px;color:var(--ink-2);padding-left:12px;
   border-left:2px solid var(--rule);max-width:72ch}
 .rx-notes{display:flex;flex-direction:column;gap:9px}
@@ -165,7 +198,30 @@ JS = r"""
     if (isNaN(n)) throw new Error("not a number: "+v);
     return n;
   }
+  function txt(v){
+    if (v===null||v===undefined) return "";
+    if (typeof v==="boolean") return v?"TRUE":"FALSE";
+    if (typeof v==="number" && Number.isInteger(v)) return String(v);
+    return String(v);
+  }
   function nums(a){return flat(a).filter(function(v){return typeof v==="number"||typeof v==="boolean"}).map(num);}
+  // Excel's comparison rules: a blank equals both "" and 0; text never equals a number.
+  function cmp(o,a,b){
+    if (a===null&&b===null){a=0;b=0;}
+    else {
+      if (a===null) a = (typeof b==="string")?"":((typeof b==="boolean")?false:0);
+      if (b===null) b = (typeof a==="string")?"":((typeof a==="boolean")?false:0);
+    }
+    var at=typeof a==="string", bt=typeof b==="string";
+    if (at&&bt){ a=a.toLowerCase(); b=b.toLowerCase(); }
+    else if (at!==bt){
+      if (o==="=") return false;
+      if (o==="<>") return true;
+      a=at?1:0; b=bt?1:0;
+    } else { a=num(a); b=num(b); }
+    switch(o){case "=":return a===b;case "<>":return a!==b;case "<":return a<b;
+              case ">":return a>b;case "<=":return a<=b;default:return a>=b;}
+  }
 
   var FN = {
     SUM:function(a){return nums(a).reduce(function(s,v){return s+v},0)},
@@ -180,25 +236,41 @@ JS = r"""
     SIGN:function(a){var v=num(a[0]);return v>0?1:(v<0?-1:0)},
     ROUND:function(a){var d=Math.pow(10,num(a[1]));return Math.round(num(a[0])*d)/d},
     ROUNDUP:function(a){var d=Math.pow(10,num(a[1]));return Math.ceil(num(a[0])*d)/d},
-    ROUNDDOWN:function(a){var d=Math.pow(10,num(a[1]));return Math.floor(num(a[0])*d)/d}
+    ROUNDDOWN:function(a){var d=Math.pow(10,num(a[1]));return Math.floor(num(a[0])*d)/d},
+    MID:function(a){var st=Math.trunc(num(a[1]));
+      if (st<1) throw new Error("MID: start position must be 1 or more");
+      return txt(a[0]).substr(st-1, Math.max(Math.trunc(num(a[2])),0));},
+    LEFT:function(a){return txt(a[0]).slice(0, a.length>1?Math.trunc(num(a[1])):1)},
+    RIGHT:function(a){var n=a.length>1?Math.trunc(num(a[1])):1; return n<=0?"":txt(a[0]).slice(-n)},
+    LEN:function(a){return txt(a[0]).length},
+    TRIM:function(a){return txt(a[0]).split(/\s+/).filter(Boolean).join(" ")},
+    UPPER:function(a){return txt(a[0]).toUpperCase()},
+    LOWER:function(a){return txt(a[0]).toLowerCase()},
+    VALUE:function(a){return num(txt(a[0]))},
+    CONCATENATE:function(a){return flat(a).map(txt).join("")},
+    CONCAT:function(a){return flat(a).map(txt).join("")},
+    N:function(a){return num(a[0])},
+    T:function(a){return (typeof a[0]==="string")?a[0]:""}
   };
 
-  function ev(n, vals) {
+  function ev(n, vals, defs, memo) {
+    if (n.k === "r") {
+      if (memo[n.i] !== undefined) return memo[n.i];
+      return (memo[n.i] = ev(defs[n.i], vals, defs, memo));
+    }
     switch (n.k) {
+      case "z": return null;                       // a blank cell, which is not the number zero
       case "n": case "s": return n.v;
-      case "p": return vals[n.id];
-      case "l": return n.a.map(function(x){return ev(x,vals)});
+      case "p": { var v = vals[n.id]; return (v===null||v===undefined) ? null : v; }
+      case "l": return n.a.map(function(x){return ev(x,vals,defs,memo)});
       case "u":
-        if (n.o==="%") return num(ev(n.a[0],vals))/100;
-        return n.o==="-" ? -num(ev(n.a[0],vals)) : num(ev(n.a[0],vals));
+        if (n.o==="%") return num(ev(n.a[0],vals,defs,memo))/100;
+        return n.o==="-" ? -num(ev(n.a[0],vals,defs,memo)) : num(ev(n.a[0],vals,defs,memo));
       case "b": {
         var o=n.o;
-        if (o==="&") return String(ev(n.a[0],vals))+String(ev(n.a[1],vals));
-        var x=ev(n.a[0],vals), y=ev(n.a[1],vals);
-        if (o==="="||o==="<>"||o==="<"||o===">"||o==="<="||o===">=") {
-          var l=num(x), r=num(y);
-          return o==="="?l===r:o==="<>"?l!==r:o==="<"?l<r:o===">"?l>r:o==="<="?l<=r:l>=r;
-        }
+        if (o==="&") return txt(ev(n.a[0],vals,defs,memo))+txt(ev(n.a[1],vals,defs,memo));
+        var x=ev(n.a[0],vals,defs,memo), y=ev(n.a[1],vals,defs,memo);
+        if (o==="="||o==="<>"||o==="<"||o===">"||o==="<="||o===">=") return cmp(o,x,y);
         var a=num(x), b=num(y);
         if (o==="+") return a+b;
         if (o==="-") return a-b;
@@ -209,16 +281,17 @@ JS = r"""
       }
       case "f": {
         if (n.o==="IF") {
-          var c=ev(n.a[0],vals);
-          var t=(typeof c==="boolean")?c:num(c)!==0;
-          return t?ev(n.a[1],vals):(n.a.length>2?ev(n.a[2],vals):false);
+          var c=ev(n.a[0],vals,defs,memo);
+          var t=(typeof c==="boolean")?c:(c===null?false:num(c)!==0);
+          return t?ev(n.a[1],vals,defs,memo):(n.a.length>2?ev(n.a[2],vals,defs,memo):false);
         }
         if (n.o==="IFERROR"||n.o==="IFNA") {
-          try { return ev(n.a[0],vals); } catch(e) { return ev(n.a[1],vals); }
+          try { return ev(n.a[0],vals,defs,memo); }
+          catch(e){ if (e && e.unsupported) throw e; return ev(n.a[1],vals,defs,memo); }
         }
         var f=FN[n.o];
-        if (!f) throw new Error(n.o+"() not implemented");
-        return f(n.a.map(function(x){return ev(x,vals)}));
+        if (!f) { var err=new Error(n.o+"() not implemented"); err.unsupported=true; throw err; }
+        return f(n.a.map(function(x){return ev(x,vals,defs,memo)}));
       }
     }
     throw new Error("node "+n.k);
@@ -227,7 +300,8 @@ JS = r"""
   function roaFor(v, picked) {
     var vals={};
     v.components.forEach(function(c){ vals[c.id] = picked[c.id] ? c.new : c.old; });
-    return ev(v.tree, vals);
+    var t = v.tree;
+    return ev(t.root, vals, t.defs, {});
   }
 
   var bps = function(x){
@@ -297,6 +371,19 @@ JS = r"""
     el("rx-notes").innerHTML = notes.map(function(n){return '<div class="rx-note">'+n+'</div>'}).join("");
     el("rx-notes-sec").hidden = notes.length === 0;
 
+    var st = v.structural || [];
+    var seen = {}, uniqSt = [];
+    st.forEach(function(x){ var k = x.label+"|"+x.kind+"|"+x.detail;
+                            if(!seen[k]){seen[k]=1; uniqSt.push(x);} });
+    el("rx-struct-sec").hidden = uniqSt.length === 0;
+    el("rx-struct").innerHTML = uniqSt.map(function(x){
+      return '<div class="rx-struct-row"><div class="rx-struct-head">'+x.detail+'</div>'
+        + '<div class="rx-formula rx-mono"><span class="k">old</span>'+x.old+'</div>'
+        + '<div class="rx-formula rx-mono"><span class="k">new</span>'+x.new+'</div></div>';
+    }).join("");
+    el("rx-gap").textContent = (v.gap === null || Math.abs(v.gap) < 0.05)
+      ? "" : ("Unattributed: " + (v.gap>0?"+":"−") + Math.abs(v.gap).toFixed(1) + " bps");
+
     el("rx-body").querySelectorAll("tr[data-id]").forEach(function(tr){
       var id = decodeURIComponent(tr.getAttribute("data-id"));
       function toggle(){ var p = on[DATA.vintages[cur].name]; p[id] = !p[id]; render(); }
@@ -312,21 +399,29 @@ JS = r"""
     render();
   }
 
+  function uniq(a){ var seen={}, o=[]; a.forEach(function(x){ if(!seen[x]){seen[x]=1;o.push(x);} }); return o; }
+
+  function fillItems(keep){
+    var g = el("rx-group").value;
+    var opts = DATA.vintages.map(function(v,i){return {v:v,i:i}})
+                            .filter(function(r){return r.v.group === g});
+    el("rx-item").innerHTML = opts.map(function(r){
+      return '<option value="'+r.i+'">'+r.v.item+'</option>'; }).join("");
+    // hold the month steady when the sheet changes - you are usually comparing like for like
+    var same = opts.filter(function(r){ return r.v.item === keep; });
+    cur = (same.length ? same[0].i : (opts.length ? opts[0].i : 0));
+    el("rx-item").value = String(cur);
+  }
+
   document.addEventListener("DOMContentLoaded", function(){
-    var tabs = el("rx-tabs");
-    if (DATA.vintages.length > 1) {
-      tabs.innerHTML = DATA.vintages.map(function(v,i){
-        return '<button class="rx-tab" role="tab" data-i="'+i+'" aria-selected="'+(i===0)+'">'+v.name+'</button>';
-      }).join("");
-      tabs.querySelectorAll("button").forEach(function(b){
-        b.addEventListener("click", function(){
-          cur = +b.getAttribute("data-i");
-          tabs.querySelectorAll("button").forEach(function(x){
-            x.setAttribute("aria-selected", x === b ? "true" : "false"); });
-          buildPanel();
-        });
-      });
-    } else { tabs.hidden = true; }
+    var groups = uniq(DATA.vintages.map(function(v){return v.group}));
+    el("rx-group").innerHTML = groups.map(function(g){
+      return '<option value="'+g+'">'+g+'</option>'; }).join("");
+    el("rx-group").addEventListener("change", function(){
+      fillItems(DATA.vintages[cur] && DATA.vintages[cur].item); buildPanel(); });
+    el("rx-item").addEventListener("change", function(){ cur = +el("rx-item").value; buildPanel(); });
+    el("rx-tabs").hidden = DATA.vintages.length < 2;
+    fillItems(null);
     el("rx-all").addEventListener("click", function(){ setAll(true); });
     el("rx-none").addEventListener("click", function(){ setAll(false); });
     buildPanel();
@@ -351,7 +446,10 @@ def render_html(payload: Dict[str, Any], title: str = "ROA component explorer",
   <p class="rx-sub">{_esc(subtitle)}</p>
 </header>
 
-<div class="rx-tabs" id="rx-tabs" role="tablist"></div>
+<div class="rx-tabs" id="rx-tabs">
+  <div class="rx-pick"><label for="rx-group">Sheet</label><select id="rx-group"></select></div>
+  <div class="rx-pick"><label for="rx-item">Month</label><select id="rx-item"></select></div>
+</div>
 
 <section class="rx-panel">
   <div class="rx-stats">
@@ -394,6 +492,13 @@ def render_html(payload: Dict[str, Any], title: str = "ROA component explorer",
       <th class="n">Change</th><th class="n">Solo effect</th></tr></thead>
     <tbody id="rx-body"></tbody>
   </table></div>
+</section>
+
+<section id="rx-struct-sec" hidden>
+  <h2 class="rx-sec-h">The calculation itself changed</h2>
+  <p class="rx-sec-n">These cells do not compute the same thing in both workbooks, so part of the
+     move belongs to none of the components above. <span id="rx-gap"></span></p>
+  <div class="rx-struct-list" id="rx-struct"></div>
 </section>
 
 <section id="rx-notes-sec" hidden>

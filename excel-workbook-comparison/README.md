@@ -321,6 +321,16 @@ The browser evaluator is cross-checked against the Python one over every subset 
 on a plain formula and on the real vintage chain (`MID`, `""` guards, blanks, text constants) — with
 the JavaScript extracted from the shipped source so there is no second copy to drift.
 
+## Blank months
+
+A vintage carries one month fewer than the last: Vintage1 has 24, Vintage24 has one. The formulas
+still run across all 24 columns — the `IF(...="","")` guards return `""` for the months with no data.
+
+`""` is a value, not an error and not zero, so `evaluate_with` returns `None` for it and
+`trace_columns` reports that column as *no data for this month* rather than counting it. The triangle
+is therefore **derived from the formulas themselves**, which works whether or not the workbook carries
+cached values — 24, 23, 22 … 1, and the run says so per sheet against what was expected.
+
 ## Why it is fast
 
 The rebuilt formula is a **DAG, not a tree**. A cell mentioned twice in one formula -

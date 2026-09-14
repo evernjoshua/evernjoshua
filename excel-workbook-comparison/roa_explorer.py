@@ -52,15 +52,16 @@ def build_payload(traces: Sequence[Trace],
         base = tr.evaluate_with(set())
         comps = []
         for c in tr.components:
-            solo = tr.evaluate_with({c.key}) - base
+            only = tr.evaluate_with({c.key})
+            solo = None if (only is None or base is None) else (only - base)
             comps.append({
                 "id": c.key, "label": c.label,
                 "refOld": c.ref_old, "refNew": c.ref_new,
                 "old": c.old, "new": c.new, "delta": c.delta,
-                "solo": solo * BPS, "labelled": c.labelled,
+                "solo": None if solo is None else solo * BPS, "labelled": c.labelled,
                 "formula": c.formula or "",
             })
-        comps.sort(key=lambda d: -abs(d["solo"]))
+        comps.sort(key=lambda d: -abs(d["solo"] or 0.0))
         out.append({
             "name": (names[i] if names and i < len(names) else tr.sheet),
             "group": (groups[i] if groups and i < len(groups) else tr.sheet),
@@ -74,6 +75,7 @@ def build_payload(traces: Sequence[Trace],
             "components": comps,
             "notes": tr.notes,
             "modelled": tr.modelled_new,
+            "blank": tr.is_blank,
             "gap": (tr.structural_gap * BPS) if tr.structural_gap is not None else None,
             "structural": _dedupe_structural(tr.structural),
         })
@@ -305,10 +307,15 @@ JS = r"""
   }
 
   var bps = function(x){
+    if (x === null || x === undefined || !isFinite(x)) return "—";
     if (Math.abs(x) < 0.05) return "0.0 bps";
     return (x > 0 ? "+" : "−") + Math.abs(x).toFixed(1) + " bps";
   };
-  var pct = function(x){ return (x*100).toFixed(4) + "%"; };
+  var pct = function(x){
+    if (x === null || x === undefined || !isFinite(x)) return "—";   // a month with no data
+    return (x*100).toFixed(4) + "%";
+  };
+  var numOrNull = function(v){ return (typeof v === "number" && isFinite(v)) ? v : null; };
   var money = function(x){ return (x>=0?"+":"−") + Math.abs(x).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); };
 
   function el(id){ return document.getElementById(id); }
@@ -316,28 +323,32 @@ JS = r"""
   function render() {
     var v = DATA.vintages[cur];
     var picked = on[v.name] || (on[v.name] = {});
-    var scenario = roaFor(v, picked);
-    var moved = (scenario - v.roaOld) * 10000;
-    var total = (v.roaNew - v.roaOld) * 10000;
+    var scenario = numOrNull(roaFor(v, picked));
+    var oldR = numOrNull(v.roaOld), newR = numOrNull(v.roaNew);
+    var moved = (scenario === null || oldR === null) ? null : (scenario - oldR) * 10000;
+    var total = (newR === null || oldR === null) ? null : (newR - oldR) * 10000;
     var nsel = v.components.filter(function(c){return picked[c.id]}).length;
 
-    el("rx-old").textContent = pct(v.roaOld);
-    el("rx-new").textContent = pct(v.roaNew);
+    el("rx-old").textContent = pct(oldR);
+    el("rx-new").textContent = pct(newR);
     el("rx-scn").textContent = pct(scenario);
     var lead = el("rx-lead");
     lead.textContent = bps(moved);
-    lead.className = "v roa-num " + (Math.abs(moved) < 0.05 ? "" : (moved > 0 ? "up" : "down"));
-    el("rx-of").textContent = total ? Math.round(moved / total * 100) + "% of the full move ("
-      + bps(total) + ")" : "no overall change";
+    lead.className = "v roa-num " + ((moved === null || Math.abs(moved) < 0.05) ? ""
+                                      : (moved > 0 ? "up" : "down"));
+    el("rx-of").textContent = (moved === null || !total) ? ""
+      : (Math.round(moved / total * 100) + "% of the full move (" + bps(total) + ")");
     el("rx-count").textContent = nsel + " of " + v.components.length + " applied";
 
-    var lo = Math.min(v.roaOld, v.roaNew), hi = Math.max(v.roaOld, v.roaNew), span = (hi-lo)||1;
-    var p = Math.max(0, Math.min(100, (scenario - lo) / span * 100));
-    var startPct = (v.roaOld - lo) / span * 100;
+    var haveMeter = (oldR !== null && newR !== null && scenario !== null);
+    var lo = haveMeter ? Math.min(oldR,newR) : 0, hi = haveMeter ? Math.max(oldR,newR) : 1;
+    var span = (hi-lo)||1;
+    var p = haveMeter ? Math.max(0, Math.min(100, (scenario - lo) / span * 100)) : 0;
+    var startPct = haveMeter ? (oldR - lo) / span * 100 : 0;
     var fill = el("rx-fill");
     fill.style.left = Math.min(startPct, p) + "%";
     fill.style.width = Math.abs(p - startPct) + "%";
-    fill.className = "rx-fill" + (moved < 0 ? " down" : "");
+    fill.className = "rx-fill" + ((moved !== null && moved < 0) ? " down" : "");
     el("rx-pin").style.left = p + "%";
 
     v.components.forEach(function(c){
@@ -358,7 +369,8 @@ JS = r"""
         + '<td class="n rx-num rx-mono">'+c.old.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</td>'
         + '<td class="n rx-num rx-mono">'+c.new.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</td>'
         + '<td class="n rx-num rx-mono '+(c.delta>=0?"up":"down")+'">'+money(c.delta)+'</td>'
-        + '<td class="n rx-num rx-mono '+(c.solo>=0?"up":"down")+'">'+bps(c.solo)+'</td></tr>';
+        + '<td class="n rx-num rx-mono '+(c.solo===null?"":(c.solo>=0?"up":"down"))+'">'
+        + bps(c.solo)+'</td></tr>';
     }).join("");
     el("rx-body").innerHTML = rows || '<tr><td colspan="7">Nothing feeding this ROA changed.</td></tr>';
 

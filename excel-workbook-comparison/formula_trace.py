@@ -640,10 +640,24 @@ class Trace:
             self._folded = fold_constants(self.tree)
         return self._folded
 
-    def evaluate_with(self, selected: Set[str]) -> float:
-        """Re-evaluate with the named components switched to their new values."""
+    def evaluate_with(self, selected: Set[str]) -> Optional[float]:
+        """Re-evaluate with the named components switched to their new values.
+
+        None when the formula yields blank - a month the vintage does not carry.
+        """
         picked = {c.key: (c.new if c.key in selected else c.old) for c in self.components}
-        return float(eval_dag(self.folded, picked))
+        return as_float(eval_dag(self.folded, picked))
+
+    @property
+    def is_blank(self) -> bool:
+        """The formula yields no value on either side: this month has no data."""
+        return self.value_old is None and self.value_new is None
+
+    @property
+    def delta(self) -> Optional[float]:
+        if self.value_old is None or self.value_new is None:
+            return None
+        return self.value_new - self.value_old
 
     @property
     def structural_gap(self) -> Optional[float]:
@@ -665,11 +679,40 @@ class Trace:
         """
         if self.value_old is not None:
             got = self.evaluate_with(set())
+            if got is None:
+                raise AssertionError(
+                    f"the rebuilt formula at {self.sheet}!{self.ref_old} evaluates to blank, but "
+                    f"the workbook holds {self.value_old!r}. Something in the chain was read as "
+                    "empty that Excel has a value for - check that the load window covers every "
+                    "row the formula reaches.")
             if abs(got - self.value_old) / max(abs(self.value_old), 1.0) > tol:
                 raise AssertionError(
                     f"trace does not reproduce the old value at {self.sheet}!{self.ref_old}: "
                     f"re-evaluated {got!r}, workbook says {self.value_old!r}. The formula was "
                     "followed incorrectly - do not trust the component impacts.")
+
+
+def as_float(v: Any) -> Optional[float]:
+    """A formula result as a number, or None when it is blank.
+
+    Excel formulas legitimately return "" - IF(D207="","",...) is exactly that guard, and it
+    fires for any month a vintage does not carry yet. That is "no value", not zero and not an
+    error, so it comes back as None rather than blowing up on float("").
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return float(v)
+    if isinstance(v, (int, float)):
+        return None if (isinstance(v, float) and math.isnan(v)) else float(v)
+    if isinstance(v, str):
+        if v.strip() == "":
+            return None
+        try:
+            return float(v.replace(",", "").strip())
+        except ValueError:
+            return None
+    return None
 
 
 _MISS = object()
@@ -1028,6 +1071,12 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
         tree=tree, notes=notes, structural=structural)
     result.modelled_new = result.evaluate_with({c.key for c in result.components})
 
+    if result.is_blank:
+        notes.append(
+            f"{sheet}!{get_column_letter(col)}{row} evaluates to blank in both workbooks - the "
+            "formula's IF(...=\"\",\"\") guard fires, so this month carries no data and there "
+            "is nothing to decompose.")
+
     if result.value_old is None or result.value_new is None:
         notes.append(
             f"{sheet} carries no cached value at the ROA cell, so both figures below are "
@@ -1186,8 +1235,11 @@ def trace_columns(old: Book, new: Book, sheet: str, row: int, cols: Iterable[int
         try:
             tr = trace(old, new, sheet, row, c, **kw)
             tr.check()
-        except (FormulaError, AssertionError) as exc:
+        except (FormulaError, AssertionError, ValueError) as exc:
             failures.append((ref, str(exc)))
+            continue
+        if tr.is_blank:
+            failures.append((ref, "no data for this month (the formula evaluates to blank)"))
             continue
         traces.append(tr)
     return traces, failures

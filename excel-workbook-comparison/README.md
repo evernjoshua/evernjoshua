@@ -321,6 +321,26 @@ The browser evaluator is cross-checked against the Python one over every subset 
 on a plain formula and on the real vintage chain (`MID`, `""` guards, blanks, text constants) — with
 the JavaScript extracted from the shipped source so there is no second copy to drift.
 
+## Why it is fast
+
+The rebuilt formula is a **DAG, not a tree**. A cell mentioned twice in one formula -
+`IFERROR(IF(D178-D202=0,"",D178-D202),"")` mentions `D202` twice - is one node with two parents.
+Walking that as a tree re-expands it and the cost doubles at every level: a 50-node graph became
+387 million node visits per evaluation, and `evaluate_with` runs once per component. That was hours
+of work and enough allocation to exhaust memory.
+
+`eval_dag` memoises on node identity, which makes it linear. A chain whose expansion is 2^30 traces
+in 0.012s and evaluates instantly. Alongside that:
+
+| | |
+|---|---|
+| `load_book(sheets=, max_row=, max_col=)` | read 24 sheets and 300 rows, not 46 sheets entire. A reference outside the window **raises** rather than reading as blank |
+| `max_cells` | a ceiling per trace: it stops and says which cell it stopped at, instead of running away |
+| parse cache | the same formula text recurs on every sheet and month; it is parsed once |
+| `Trace.folded` | constant folding happens once per trace, not once per evaluation |
+
+24 sheets × the month triangle = 300 combinations, read and traced and written in about 5 seconds.
+
 ## Page size
 
 Each sheet-month combination carries its own formula tree. Two things keep that affordable: subtrees

@@ -32,7 +32,7 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 __all__ = [
     "FormulaError", "UnsupportedFormula", "parse", "evaluate", "Node", "remap_rows",
     "Book", "load_book", "Component", "StructuralChange", "Trace", "trace",
-    "compile_scenario", "trace_columns",
+    "compile_scenario", "trace_columns", "eval_dag",
 ]
 
 
@@ -231,14 +231,27 @@ class _Parser:
         raise FormulaError(f"unexpected {tok.text!r} in {self.src!r}")
 
 
+_PARSE_CACHE: Dict[str, Node] = {}
+
+
 def parse(text: str) -> Node:
-    """Parse an Excel formula. The leading '=' is optional."""
+    """Parse an Excel formula. The leading '=' is optional.
+
+    Cached: the same formula text recurs on every sheet and every month column, and the
+    parsed tree is only ever read - the rebuilder allocates its own nodes.
+    """
+    hit = _PARSE_CACHE.get(text)
+    if hit is not None:
+        return hit
     src = text.strip()
     if src.startswith("="):
         src = src[1:]
     if not src:
         raise FormulaError("empty formula")
-    return _Parser(tokenize(src), src).parse()
+    node = _Parser(tokenize(src), src).parse()
+    if len(_PARSE_CACHE) < 20_000:
+        _PARSE_CACHE[text] = node
+    return node
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +475,8 @@ class Book:
     path: Path
     values: Dict[str, Dict[Tuple[int, int], Any]]
     formulas: Dict[str, Dict[Tuple[int, int], str]]
+    max_row: Optional[int] = None        # the window that was read, so we can spot refs outside it
+    max_col: Optional[int] = None
 
     def value(self, sheet: str, row: int, col: int) -> Any:
         return self.values.get(sheet, {}).get((row, col))
@@ -474,8 +489,23 @@ class Book:
         return list(self.values)
 
 
-def load_book(path: str | Path, sheets: Optional[Iterable[str]] = None) -> Book:
-    """Read cached values and formula text from an .xlsx/.xlsm."""
+def sheet_names(path: str | Path) -> List[str]:
+    """Just the sheet names - cheap, so you can decide what is worth reading."""
+    wb = load_workbook(Path(path), read_only=True, data_only=True, keep_links=False)
+    try:
+        return list(wb.sheetnames)
+    finally:
+        wb.close()
+
+
+def load_book(path: str | Path, sheets: Optional[Iterable[str]] = None,
+              max_row: Optional[int] = None, max_col: Optional[int] = None) -> Book:
+    """Read cached values and formula text from an .xlsx/.xlsm.
+
+    `sheets`, `max_row` and `max_col` bound the read. A 46-sheet report where you only need
+    24 sheets and the first 260 rows is a fraction of the work - and a reference landing
+    outside the window raises rather than quietly reading as blank.
+    """
     p = Path(path)
     if p.suffix.lower() in {".xlsb", ".xls"}:
         raise UnsupportedFormula(
@@ -496,7 +526,7 @@ def load_book(path: str | Path, sheets: Optional[Iterable[str]] = None) -> Book:
                 if not hasattr(ws, "iter_rows"):
                     continue
                 grid: Dict[Tuple[int, int], Any] = {}
-                for row in ws.iter_rows():
+                for row in ws.iter_rows(max_row=max_row, max_col=max_col):
                     for cell in row:
                         v = cell.value
                         if v is None:
@@ -510,7 +540,8 @@ def load_book(path: str | Path, sheets: Optional[Iterable[str]] = None) -> Book:
                 sink[name] = grid
         finally:
             wb.close()
-    return Book(path=p.resolve(), values=values, formulas=formulas)
+    return Book(path=p.resolve(), values=values, formulas=formulas,
+                max_row=max_row, max_col=max_col)
 
 
 # ---------------------------------------------------------------------------
@@ -600,10 +631,19 @@ class Trace:
     def formula_changed(self) -> bool:
         return (self.formula_old or "").replace(" ", "") != (self.formula_new or "").replace(" ", "")
 
+    _folded: Optional[Node] = field(default=None, repr=False, compare=False)
+
+    @property
+    def folded(self) -> Node:
+        """The tree with every component-free subtree pre-computed. Built once."""
+        if self._folded is None:
+            self._folded = fold_constants(self.tree)
+        return self._folded
+
     def evaluate_with(self, selected: Set[str]) -> float:
         """Re-evaluate with the named components switched to their new values."""
         picked = {c.key: (c.new if c.key in selected else c.old) for c in self.components}
-        return float(_eval_scenario(self.tree, picked))
+        return float(eval_dag(self.folded, picked))
 
     @property
     def structural_gap(self) -> Optional[float]:
@@ -632,24 +672,90 @@ class Trace:
                     "followed incorrectly - do not trust the component impacts.")
 
 
-def _eval_scenario(node: Node, picked: Dict[str, float]) -> Any:
-    def unreachable(sheet, row, col):
-        raise UnsupportedFormula(
-            f"the scenario tree still references {sheet}!{row}:{col}; it should have been "
-            "resolved to a constant or a parameter when the trace was built")
-    return evaluate(_eval_scenario_node(node, picked), unreachable)
+_MISS = object()
 
 
-def _eval_scenario_node(node: Node, picked: Dict[str, float]) -> Node:
-    if node.kind == "param":
+def eval_dag(node: Node, picked: Dict[str, Any], memo: Optional[Dict[int, Any]] = None) -> Any:
+    """Evaluate the scenario graph, visiting each distinct node once.
+
+    The rebuilt formula is a DAG, not a tree: a cell mentioned twice in one formula - your
+    IFERROR(IF(D178-D202=0,"",D178-D202),"") mentions D202 twice - is one node with two
+    parents. Walking it as a tree re-expands it, and the cost doubles at every level: a
+    50-node graph became hundreds of millions of visits. Memoising on node identity makes
+    it linear, which is the difference between hours and milliseconds.
+    """
+    if memo is None:
+        memo = {}
+    key = id(node)
+    hit = memo.get(key, _MISS)
+    if hit is not _MISS:
+        return hit
+
+    k = node.kind
+    if k == "param":
         v = picked[node.value]
-        return Node("blank") if v is None else Node("num", float(v))
-    if node.kind == "list":
-        return Node("list", None, [_eval_scenario_node(a, picked) for a in node.args])
-    if node.kind in ("num", "str", "bool", "err", "blank"):
-        return node
-    return Node(node.kind, node.value, [_eval_scenario_node(a, picked) for a in node.args],
-                node.sheet, node.coord)
+    elif k in ("num", "str", "bool"):
+        v = node.value
+    elif k == "blank":
+        v = None
+    elif k == "err":
+        raise FormulaError(f"formula contains {node.value}")
+    elif k == "list":
+        v = [eval_dag(a, picked, memo) for a in node.args]
+    elif k == "unary":
+        if node.value == "%":
+            v = _num(eval_dag(node.args[0], picked, memo)) / 100.0
+        else:
+            x = _num(eval_dag(node.args[0], picked, memo))
+            v = -x if node.value == "-" else x
+    elif k == "binop":
+        op = node.value
+        if op == "&":
+            v = _text(eval_dag(node.args[0], picked, memo)) + \
+                _text(eval_dag(node.args[1], picked, memo))
+        else:
+            a = eval_dag(node.args[0], picked, memo)
+            b = eval_dag(node.args[1], picked, memo)
+            if op in _COMPARE:
+                v = _compare(op, a, b)
+            else:
+                x, y = _num(a), _num(b)
+                if op == "+":   v = x + y
+                elif op == "-": v = x - y
+                elif op == "*": v = x * y
+                elif op == "/": v = _div(x, y)
+                elif op == "^": v = x ** y
+                else: raise UnsupportedFormula(f"operator {op!r}")
+    elif k == "func":
+        name = node.value
+        if name == "IF":
+            cond = eval_dag(node.args[0], picked, memo)
+            truthy = bool(cond) if isinstance(cond, bool) else (cond is not None and _num(cond) != 0)
+            if truthy:
+                v = eval_dag(node.args[1], picked, memo)
+            else:
+                v = eval_dag(node.args[2], picked, memo) if len(node.args) > 2 else False
+        elif name in ("IFERROR", "IFNA"):
+            try:
+                v = eval_dag(node.args[0], picked, memo)
+            except UnsupportedFormula:
+                raise
+            except FormulaError:
+                v = eval_dag(node.args[1], picked, memo)
+        else:
+            fn = FUNCTIONS.get(name)
+            if fn is None:
+                raise UnsupportedFormula(f"{name}() is not implemented")
+            v = fn([eval_dag(a, picked, memo) for a in node.args])
+    else:
+        raise UnsupportedFormula(f"node kind {k!r}")
+
+    memo[key] = v
+    return v
+
+
+def _eval_scenario(node: Node, picked: Dict[str, Any]) -> Any:
+    return eval_dag(node, picked)
 
 
 def _is_num(v: Any) -> bool:
@@ -696,7 +802,7 @@ def _same(a: Any, b: Any, tol: float) -> bool:
 def trace(old: Book, new: Book, sheet: str, row: int, col: int,
           row_map: Optional[Callable[[int], int]] = None,
           label_col: int = 2, max_depth: int = 8, tol: float = 1e-9,
-          sheet_new: Optional[str] = None) -> Trace:
+          sheet_new: Optional[str] = None, max_cells: int = 20_000) -> Trace:
     """Follow the formula at (sheet, row, col) down to the inputs that changed.
 
     `row_map` maps a row in the old workbook to the same logical row in the new one - this is
@@ -712,6 +818,8 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
     structural: List[StructuralChange] = []
     memo: Dict[Tuple[str, int, int], Tuple[Node, bool]] = {}
     visiting: Set[Tuple[str, int, int]] = set()
+    entered = [0]          # cells ENTERED, not cells finished: the memo only fills on the
+                           # way back up, so counting finished cells never stops a deep descent
 
     def label_of(sh: str, r: int) -> str:
         v = old.value(sh, r, label_col)
@@ -816,7 +924,13 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
         if key in visiting:
             raise FormulaError(f"circular reference at {sh}!{get_column_letter(c)}{r}")
 
+        entered[0] += 1
         sh_new = sheet_b if sh == sheet else sh
+        if (old.max_row and r > old.max_row) or (old.max_col and c > old.max_col):
+            raise FormulaError(
+                f"{sh}!{get_column_letter(c)}{r} is outside the window the workbook was read with "
+                f"(max_row={old.max_row}, max_col={old.max_col}). Widen it in load_book, or the "
+                "cell would read as blank and the answer would be wrong.")
         ov = old.value(sh, r, c)
         nv = new.value(sh_new, rmap(r), c)
         lab = label_of(sh, r)
@@ -833,7 +947,9 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
                 result = (Node("bool", ov), False)
             elif isinstance(ov, str) and not _blankish(ov):
                 result = (Node("str", ov), False)
-            elif f is not None and depth < max_depth:
+            elif f is not None and depth < max_depth and entered[0] < max_cells:
+                # A workbook with no cached values reaches every cell through here, so the
+                # ceiling has to guard this path too, not only the changed one.
                 visiting.add(key)
                 try:
                     sub, _ = rebuild(parse(f), sh, depth)
@@ -844,6 +960,9 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
                 finally:
                     visiting.discard(key)
             elif _blankish(ov):
+                if f is not None and entered[0] >= max_cells:
+                    notes.append(f"stopped at {sh}!{get_column_letter(c)}{r} "
+                                 f"(cell limit {max_cells:,}) - held blank")
                 result = (Node("blank"), False)          # blank, not zero: "" comparisons depend on it
             else:
                 notes.append(f"{sh}!{get_column_letter(c)}{r} holds {ov!r}, not a number - held blank")
@@ -859,9 +978,11 @@ def trace(old: Book, new: Book, sheet: str, row: int, col: int,
             memo[key] = (Node("blank") if ov_n is None else Node("num", float(ov_n)), False)
             return memo[key]
 
-        if f is None or depth >= max_depth:
+        if f is None or depth >= max_depth or entered[0] >= max_cells:
             if f is not None:
-                notes.append(f"stopped at {sh}!{get_column_letter(c)}{r} (depth limit {max_depth}) - "
+                why = (f"depth limit {max_depth}" if depth >= max_depth
+                       else f"cell limit {max_cells:,}")
+                notes.append(f"stopped at {sh}!{get_column_letter(c)}{r} ({why}) - "
                              "anything below it is folded into this component")
             result = (add_component(sh, r, c, ov_n, nv_n, depth, lab), bool(lab))
             memo[key] = result
@@ -961,7 +1082,7 @@ def fold_constants(node: Node, _cache: Optional[Dict[int, Node]] = None) -> Node
     if node.kind not in ("func", "binop", "unary") or _has_param(folded):
         return folded
     try:
-        v = evaluate(folded, lambda sh, r, c: None)
+        v = eval_dag(folded, {})
     except FormulaError:
         return folded                      # an error an enclosing IFERROR is meant to catch
     if v is None:
@@ -1040,7 +1161,7 @@ def compile_scenario(tr: Trace) -> Dict[str, Any]:
             for a in n.args:
                 count(a)
 
-    folded = fold_constants(tr.tree)
+    folded = tr.folded
     count(folded)
     repeated = {k for k, v in seen.items() if v > 1}
     seen = {k: 1 for k in repeated}                 # only share what actually repeats

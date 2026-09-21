@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+
+# Local scratch copies of the forecast workbooks
+*.xlsx
+*.xlsm

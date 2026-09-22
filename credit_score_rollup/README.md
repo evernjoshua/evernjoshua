@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_15.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_16.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -44,6 +44,42 @@ accounts over its roll-up's, so a family's segments add to 100% and the roll-up 
 100%. A family with no roll-up tab is divided by the sum of its own segments; the
 campaign-total rows are divided by the last of them, the Campaign Total row.
 
+## Actuals
+
+Point `ACTUALS_FILE` at the actuals table (.csv, .xlsx or .xlsm) and a **second pair of
+outputs** is written beside the forecast-only ones:
+
+| | forecast only | with actuals |
+| --- | --- | --- |
+| page | `segment_heatmap.html` | `segment_heatmap_actuals.html` |
+| to publish | `segment_heatmap_artifact.html` | `segment_heatmap_actuals_artifact.html` |
+| workbook | `segment_heatmap.xlsx` | `segment_heatmap_actuals.xlsx` |
+
+Every metric group gains an **Actual** column after its variance. Actuals join at
+**roll-up level only** - a row of the actuals counts when `Branding` is `all` and `Fee` is
+not, and its name is segment, fee, then branding with a `_` before the branding, which is
+the roll-up tab exactly: `Credit Karma` + `$95` + `_` + `ALL`. Tabs with no fee in the
+name, like `Google PQ Paid Search_ALL`, match the no-fee pattern. `ACTUALS_ALIASES` fixes
+any that still disagree.
+
+`ACTUALS_MAP` says which actuals column and which MOB stands behind each metric - Yr 1 is
+MOB 12, Yr 2 MOB 24, Yr 3 MOB 36. `CumUnitRate` feeds the unit losses, `CumNetDollar` the
+dollar losses, `CumulativeROA` the ROA, `Boards` the booked accounts and
+`Avg_InitialLinePerBooked` the credit line. CPA has no actual.
+
+**Which vintage.** `ACTUALS_VINTAGE = "latest"` takes the newest vintage that has actually
+*reached* that MOB, so Yr 3 comes from a three-year-old vintage rather than the newest one,
+which cannot have a Yr 3 number yet. `ACTUALS_REQUIRE_SEASONED` throws out any vintage that
+cannot have got there, whatever the file claims. `median`, `mean` and `max` are the other
+choices.
+
+**Reading it.** The Actual cell is shaded by the forecast against it, the opposite way
+round to the metric itself: **red where the forecast is optimistic** - a loss below the
+actual, a return above it - and green where it is conservative. A column of red in the loss
+groups means the losses are being understated. Hover a cell (or read the cell note in
+Excel) for the vintage it came from, and the median, mean and range across the last
+`ACTUALS_SPREAD_N` seasoned vintages.
+
 ## The boxes
 
 `TILES` names the boxes above the table and the metric each one reads:
@@ -84,6 +120,14 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v16
+
+- Actuals. `ACTUALS_FILE` and the settings around it add an Actual column to every
+  metric group and write a second pair of outputs; without the file nothing changes.
+- The Actual column is shaded by forecast-minus-actual, so optimistic reads red, and
+  the vintage and its spread sit in the hover and in the Excel cell note.
+- Vintage choice is by maturity, not recency, and unseasoned vintages are ignored.
 
 ### v15
 

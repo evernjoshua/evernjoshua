@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_14.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_15.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -44,6 +44,17 @@ accounts over its roll-up's, so a family's segments add to 100% and the roll-up 
 100%. A family with no roll-up tab is divided by the sum of its own segments; the
 campaign-total rows are divided by the last of them, the Campaign Total row.
 
+## The boxes
+
+`TILES` names the boxes above the table and the metric each one reads:
+Booked accounts, Yr. 1 Unit C/O, 3 Yr. Cuml. ROA Annualized, CPA, Avg. Credit Line.
+`SUMMARY_EXTRA_TILES` holds boxes that are **not** columns in the heat map - give one the
+cell it sits in on `SUMMARY_SHEET` and it appears. `3 Yr. Cuml. PTI per Board` is there
+waiting for its cell. No box prints where its number came from.
+
+A box only renders when its current-month value reads as a number. A box that never shows
+up means that cell came back empty on the summary tab.
+
 ## Row order
 
 Families are grouped by annual fee, in `FEE_ORDER`: **$75, then $39, then $0, then $95**,
@@ -73,6 +84,15 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v15
+
+- `TILES` and `SUMMARY_EXTRA_TILES` make the boxes configurable. Yr. 1 Unit C/O and
+  3 Yr. Cuml. ROA Annualized carry those names, and 3 Yr. Cuml. PTI per Board is
+  wired up pending its cell address.
+- The boxes no longer print "from Digital_ALL" underneath.
+- Share of Booked is blank on the row that IS the denominator - every roll-up row and
+  the Campaign Total row - instead of printing 100%.
 
 ### v14
 

@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_17.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_18.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -126,6 +126,13 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v18
+
+- The three ROA metrics read `H22`, `I22`, `J22`. They were on `H22`, `I23`, `J23`,
+  so the 2 Yr. and 3 Yr. ROA columns were reading an empty row - which is also why the
+  3 Yr. ROA box never appeared. Each group now sits on one row: unit C/O on 11, dollar
+  C/O on 12, ROA on 22.
 
 ### v17
 

@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_20.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_21.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -136,6 +136,14 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v21
+
+- **Fixed** negative variances showing as `âˆ'0.01%`. The page wrote a real minus sign
+  (U+2212); anything reading those bytes as Windows-1252 mangles it. The pages are now
+  pure ASCII - the minus is written `&minus;` - and the charset declaration travels with
+  the artifact fragment as well as the standalone page. Verified by forcing a
+  windows-1252 charset on the page: it still renders correctly.
 
 ### v20
 

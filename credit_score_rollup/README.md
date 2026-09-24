@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_18.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_19.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -79,6 +79,11 @@ which cannot have a Yr 3 number yet. `ACTUALS_REQUIRE_SEASONED` throws out any v
 cannot have got there, whatever the file claims. `median`, `mean` and `max` are the other
 choices.
 
+**The spread.** The hover summarises **every seasoned vintage carrying data at that MOB** -
+all the MOB 12 vintages behind a Yr 1 figure, all the MOB 24 ones behind Yr 2. That is the
+population the forecast is being judged against, so nothing is left out of it.
+`ACTUALS_SPREAD_N = 0` means all; set a number to look at only that many of the most recent.
+
 **Reading it.** The Actual cell is shaded by the forecast against it, the opposite way
 round to the metric itself: **red where the forecast is optimistic** - a loss below the
 actual, a return above it - and green where it is conservative. A column of red in the loss
@@ -126,6 +131,11 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v19
+
+- The spread in the hover now covers **every** seasoned vintage with data at that MOB,
+  not the last eight. `ACTUALS_SPREAD_N = 0` is the new default and means all of them.
 
 ### v18
 

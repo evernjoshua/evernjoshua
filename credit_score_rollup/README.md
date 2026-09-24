@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_16.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_17.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -43,6 +43,12 @@ The volume line, B6, is labelled **Booked Accts**, and the tile above the table 
 accounts over its roll-up's, so a family's segments add to 100% and the roll-up row reads
 100%. A family with no roll-up tab is divided by the sum of its own segments; the
 campaign-total rows are divided by the last of them, the Campaign Total row.
+
+## Column names
+
+Every heading is a constant at the top of the settings cell, so renaming one is a single
+edit: `VOLUME`, `SHARE`, `CPA`, `ACL`, `U1`-`U3` (unit C/O), `D1`-`D3` (dollar C/O),
+`R1`-`R3` (ROA). Nothing downstream repeats a heading as a literal.
 
 ## Actuals
 
@@ -120,6 +126,18 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v17
+
+- Column headings moved into constants and renamed: Yr. 1 Unit C/O, 2 Yr. Cuml. Unit
+  C/O, 3 Yr. Cuml. Unit C/O, Yr. 1-3 $ C/O, Yr. 1 Expected ROA, 2 and 3 Yr. Expected
+  Cuml. ROA Annl.
+- **Fixed** the hover behind each Actual: the vintage span it printed came from every
+  seasoned vintage, while the median, mean and range came from the last
+  `ACTUALS_SPREAD_N` - so the span was wider than the figures it claimed to describe.
+  Both now come from the same window, and it says how many older vintages were left out.
+- **Fixed** the same hover printing raw values (`0.1195`) against a cell showing `11.95%`.
+  The stats now use the column's own format.
 
 ### v16
 

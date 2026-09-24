@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_19.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_20.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -62,11 +62,16 @@ outputs** is written beside the forecast-only ones:
 | workbook | `segment_heatmap.xlsx` | `segment_heatmap_actuals.xlsx` |
 
 Every metric group gains an **Actual** column after its variance. Actuals join at
-**roll-up level only** - a row of the actuals counts when `Branding` is `all` and `Fee` is
-not, and its name is segment, fee, then branding with a `_` before the branding, which is
-the roll-up tab exactly: `Credit Karma` + `$95` + `_` + `ALL`. Tabs with no fee in the
-name, like `Google PQ Paid Search_ALL`, match the no-fee pattern. `ACTUALS_ALIASES` fixes
-any that still disagree.
+**roll-up level only**: a row counts when every column in `ACTUALS_ROLLUP_ALL` reads
+`All` - `Branding` and `OriginalCreditLine` by default. Credit line matters as much as
+branding, because a thin per-line slice can read 0% or 100% and wreck the spread.
+
+The name is segment, fee, then branding with a `_` before the branding:
+`Credit Karma` + `39` + `_` + `All` matches the tab `Credit Karma $39_ALL`. Matching
+ignores case, spaces **and the dollar sign**, so a file writing `39` meets a tab writing
+`$39`. Where `Fee` is `All` there is no fee in the name, which is how
+`Google PQ Paid Search_ALL` and `Digital_ALL` match. `ACTUALS_ALIASES` fixes any that
+still disagree, and cell 5 warns if two products ever answer to one name.
 
 `ACTUALS_MAP` says which actuals column and which MOB stands behind each metric - Yr 1 is
 MOB 12, Yr 2 MOB 24, Yr 3 MOB 36. `CumUnitRate` feeds the unit losses, `CumNetDollar` the
@@ -131,6 +136,20 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v20
+
+- **Fixed** the actuals spread taking in per-credit-line slices. Only `Branding` was
+  required to be `All`, so the `$300`, `$500` and `$1000` rows came along - and a thin
+  slice reads 0% or 100%, which is where a range of 0 to 100 came from. Every column in
+  `ACTUALS_ROLLUP_ALL` must now read `All`. On a file shaped like the real one this took
+  Credit Karma $39's Yr 1 spread from 0.00%-100.00% across 180 rows to 6.11%-14.90%
+  across 45.
+- **Fixed** the join missing entirely when the file writes `39` and the tab writes `$39`.
+  Names now match ignoring the dollar sign.
+- The loose fallback key patterns are gone - they let several fees collide on one name.
+- Cell 5 reports how many split rows were dropped, warns when one name covers more than
+  one product, and flags a breakdown column that is not being filtered on.
 
 ### v19
 

@@ -1,6 +1,6 @@
 # Segment heat map
 
-`02_heatmap_21.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+`02_heatmap_22.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs
 
@@ -89,6 +89,12 @@ all the MOB 12 vintages behind a Yr 1 figure, all the MOB 24 ones behind Yr 2. T
 population the forecast is being judged against, so nothing is left out of it.
 `ACTUALS_SPREAD_N = 0` means all; set a number to look at only that many of the most recent.
 
+**Hiding some of them.** `ACTUALS_HIDDEN` lists the Actual columns that start out of
+sight - by default the Yr. 2 and Yr. 3 $ C/O ones and all three ROA ones. Nothing is
+dropped: the page carries a **Show N more actuals** button that folds them back in, and in
+the workbook they are hidden columns you can unhide. The cells stay in the table either
+way, so sorting and the column numbering are unaffected.
+
 **Reading it.** The Actual cell is shaded by the forecast against it, the opposite way
 round to the metric itself: **red where the forecast is optimistic** - a loss below the
 actual, a return above it - and green where it is conservative. A column of red in the loss
@@ -136,6 +142,13 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v22
+
+- `ACTUALS_HIDDEN` folds the Yr. 2 and Yr. 3 $ C/O actuals and all three ROA actuals
+  out of sight, with a button on the page to show them and hidden columns in the
+  workbook. The header spans follow the toggle, and the cells stay in the table so
+  sorting is unaffected.
 
 ### v21
 

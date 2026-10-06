@@ -4,37 +4,40 @@ Cell-by-cell value comparison of two .xlsb workbooks with a row offset.
 Compares ONLY these sheets (every other sheet is never opened):
     Vintage1, Vintage2, ... Vintage24
 
+Sheet layout assumed
+--------------------
+    Column A      section notes (Account Metrics, GROSS RECEIVABLE, ...)
+    Column B      attribute name (Booked Accounts, Average Vantage Score, ...)
+    Column C..Z   values (Vintage1), C..Y on Vintage2..Vintage24
+
 Row alignment
 -------------
 A new row was inserted in the WIP file, so from row 9 down every WIP row is
 one lower than in the original:
     Original row 9  <->  WIP row 10
     Original row 10 <->  WIP row 11   ... and so on.
-Rows 1-8 are skipped. WIP row 9 (the new row) has no original counterpart
-and is not compared.
+WIP row 9 (the new row) has no original counterpart and is not compared.
 
-Rules
------
-* Values only: .xlsb stores the last calculated value of every cell, and
-  that is what is read. Formulas and charts are ignored.
-* Report column A = attribute (col A) from the original row,
-  report column B = attribute (col A) from the paired WIP row, so you can
-  see both side by side. If they differ the row is flagged - a quick check
-  that the rows really line up. Source columns B..Z therefore appear one
-  column to the right in the report (row 8 shows the source column letter).
-* Original rows 9-13 are copied as is (header block).
-* Original rows 14+ show the delta:
-      numbers      -> WIP - Original, rounded to 3 decimals
-                      (a delta that rounds to 0.000 counts as a match)
-      text/blank   -> blank if equal, otherwise "Original -> WIP"
-* Compared columns: B..Z on Vintage1, B..Y on Vintage2..Vintage24.
+Report tab per sheet (same row numbers and column letters as the ORIGINAL)
+--------------------------------------------------------------------------
+* Rows 1-8      copied as is from the original (not compared).
+* Column A      copied as is from the original (not compared).
+* Column B      the attribute from the original. If the WIP attribute on the
+                paired row is different, the cell is red and the WIP
+                attribute is shown in the "WIP attribute" column - a quick
+                check that the rows really line up.
+* Rows 9-13     values copied as is (header block); red if WIP differs.
+* Rows 14+      the delta:
+                    numbers    -> WIP - Original, rounded to 3 decimals
+                                  (rounds to 0.000 = match)
+                    text/blank -> blank if equal, otherwise "Original -> WIP"
+* After the data: "WIP row" (paired WIP row number) and "WIP attribute".
 
-Output: an .xlsx report with
-    * "Summary"      - one row per sheet with the number of differences
-    * "Differences"  - every differing cell with both cell addresses,
-                       the attribute, both values and the delta
-    * one tab per sheet laid out on the ORIGINAL row numbers, with an extra
-      "WIP row" column showing the paired WIP row number
+Values only: .xlsb stores the last calculated value of every cell, and that
+is what is read. Formulas and charts are ignored.
+
+Other tabs: "Summary" (differences per sheet) and "Differences" (every
+differing cell with both cell addresses, the attribute, both values, delta).
 
 Usage
 -----
@@ -52,11 +55,13 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 from pyxlsb import open_workbook
 
-START_ROW = 9             # first original row compared (rows 1-8 skipped)
+START_ROW = 9             # first original row compared
 WIP_ROW_OFFSET = 1        # WIP row = original row + 1
 HEADER_LAST_ROW = 13      # original rows START_ROW..13 are printed as is
 DECIMALS = 3              # deltas are rounded to this many decimals
-FIRST_COL = 2             # column B
+NOTE_COL = 1              # column A - section notes, copied as is
+LABEL_COL = 2             # column B - attribute name
+FIRST_COL = 3             # column C - first value column
 FULL_LAST_COL = 26        # column Z (Vintage1)
 SHORT_LAST_COL = 25       # column Y (Vintage2..Vintage24)
 
@@ -74,7 +79,8 @@ def last_col_for(sheet_name):
 
 def read_sheet(path, sheet_name, last_col):
     """Return {(row, col): value} (1-based) for columns A..last_col, or None
-    if the sheet does not exist. Only the requested sheet is read."""
+    if the sheet does not exist. Only the requested sheet is read. Text is
+    trimmed, so "Booked Accounts " and "Booked Accounts" are equal."""
     with open_workbook(path) as wb:
         if sheet_name not in wb.sheets:
             return None
@@ -86,8 +92,10 @@ def read_sheet(path, sheet_name, last_col):
                     if col > last_col or c.v is None:
                         continue
                     v = c.v
-                    if isinstance(v, str) and v.strip() == "":
-                        continue
+                    if isinstance(v, str):
+                        v = v.strip()
+                        if v == "":
+                            continue
                     cells[(c.r + 1, col)] = v
         return cells
 
@@ -118,21 +126,27 @@ def compare_sheet(sheet_name, orig_cells, wip_cells, args):
     max_wip = max([r - offset for r, _ in wip_cells] + [args.start_row])
     max_row = max(max_orig, max_wip)
 
-    grid = {}          # (orig_row, source col) -> value to write in the report tab
-    wip_labels = {}    # orig_row -> WIP attribute on the paired row
+    grid = {}          # (orig_row, col) -> value to write in the report tab
+    wip_labels = {}    # orig_row -> WIP attribute, only where it differs
     flagged = set()    # cells to highlight
     diffs = []
 
+    # rows above the comparison block: copied as is from the original
+    for (r, c), v in orig_cells.items():
+        if r < args.start_row:
+            grid[(r, c)] = v
+
     for r in range(args.start_row, max_row + 1):
         wr = r + offset
-        label = orig_cells.get((r, 1))
-        wip_label = wip_cells.get((wr, 1))
-        grid[(r, 1)] = label
-        wip_labels[r] = wip_label
+        grid[(r, NOTE_COL)] = orig_cells.get((r, NOTE_COL))
+        label = orig_cells.get((r, LABEL_COL))
+        wip_label = wip_cells.get((wr, LABEL_COL))
+        grid[(r, LABEL_COL)] = label
         if label != wip_label:
-            flagged.add((r, 1))
-            diffs.append((sheet_name, f"A{r}", f"A{wr}", label, wip_label, label, wip_label,
-                          "label differs - check row alignment"))
+            flagged.add((r, LABEL_COL))
+            wip_labels[r] = wip_label
+            diffs.append((sheet_name, f"B{r}", f"B{wr}", label, label, wip_label,
+                          "attribute differs - check row alignment"))
 
         for c in range(FIRST_COL, last_col + 1):
             col = get_column_letter(c)
@@ -142,52 +156,48 @@ def compare_sheet(sheet_name, orig_cells, wip_cells, args):
                 grid[(r, c)] = o if o is not None else w
                 if o != w:
                     flagged.add((r, c))
-                    diffs.append((sheet_name, f"{col}{r}", f"{col}{wr}", label, wip_label,
-                                  o, w, "header differs"))
+                    diffs.append((sheet_name, f"{col}{r}", f"{col}{wr}", label, o, w,
+                                  "header differs"))
                 continue
             different, delta = compare_values(o, w, args.decimals)
             grid[(r, c)] = delta
             if different:
                 flagged.add((r, c))
-                diffs.append((sheet_name, f"{col}{r}", f"{col}{wr}", label, wip_label,
-                              o, w, delta))
+                diffs.append((sheet_name, f"{col}{r}", f"{col}{wr}", label, o, w, delta))
 
     return grid, wip_labels, flagged, diffs, max_row, last_col
 
 
 def write_sheet_tab(ws, grid, wip_labels, flagged, max_row, last_col, args):
-    """Layout: A = original attribute, B = WIP attribute, then source columns
-    B..last_col shifted one to the right, then the paired WIP row number."""
+    """Same rows/columns as the original sheet, plus "WIP row" and
+    "WIP attribute" helper columns after the data."""
     hdr = args.start_row - 1
-    wip_row_col = last_col + 3
-    ws.cell(row=hdr, column=1, value="Attribute (Original)").font = BOLD
-    ws.cell(row=hdr, column=2, value="Attribute (WIP)").font = BOLD
-    for c in range(FIRST_COL, last_col + 1):
-        ws.cell(row=hdr, column=c + 1, value=get_column_letter(c)).font = GREY
+    wip_row_col = last_col + 2
+    wip_label_col = last_col + 3
     ws.cell(row=hdr, column=wip_row_col, value="WIP row").font = BOLD
+    ws.cell(row=hdr, column=wip_label_col, value="WIP attribute (if different)").font = BOLD
 
     for r in range(args.start_row, max_row + 1):
         ws.cell(row=r, column=wip_row_col, value=r + args.offset).font = GREY
-        if wip_labels.get(r) is not None:
-            cell = ws.cell(row=r, column=2, value=wip_labels[r])
-            cell.font = BOLD
-            if (r, 1) in flagged:
-                cell.fill = DIFF_FILL
+        if r in wip_labels:
+            cell = ws.cell(row=r, column=wip_label_col, value=wip_labels[r])
+            cell.fill = DIFF_FILL
     for (r, c), v in grid.items():
         if v is None:
             continue
-        cell = ws.cell(row=r, column=1 if c == 1 else c + 1, value=v)
-        if r <= args.header_last_row or c == 1:
+        cell = ws.cell(row=r, column=c, value=v)
+        if r <= args.header_last_row or c in (NOTE_COL, LABEL_COL):
             cell.font = BOLD
         elif is_num(v):
             cell.number_format = "0.000"
         if (r, c) in flagged:
             cell.fill = DIFF_FILL
-    ws.freeze_panes = ws.cell(row=args.header_last_row + 1, column=3)
-    ws.column_dimensions["A"].width = 40
-    ws.column_dimensions["B"].width = 40
+    ws.freeze_panes = ws.cell(row=args.header_last_row + 1, column=FIRST_COL)
+    ws.column_dimensions["A"].width = 24
+    ws.column_dimensions["B"].width = 42
     for c in range(FIRST_COL, last_col + 1):
-        ws.column_dimensions[get_column_letter(c + 1)].width = 14
+        ws.column_dimensions[get_column_letter(c)].width = 14
+    ws.column_dimensions[get_column_letter(wip_label_col)].width = 42
 
 
 def main():
@@ -212,8 +222,8 @@ def main():
     summary.title = "Summary"
     summary.append(["Sheet", "Columns compared", "Rows (Original -> WIP)", "Status", "Differences"])
     details = out.create_sheet("Differences")
-    details.append(["Sheet", "Original cell", "WIP cell", "Attribute (Original)",
-                    "Attribute (WIP)", "Original", "WIP", "Delta (WIP - Original)"])
+    details.append(["Sheet", "Original cell", "WIP cell", "Attribute (col B)",
+                    "Original", "WIP", "Delta (WIP - Original)"])
     for ws in (summary, details):
         for cell in ws[1]:
             cell.font = BOLD
@@ -224,7 +234,7 @@ def main():
           f"(offset +{args.offset}); rows up to {args.header_last_row} printed as is\n")
     for name in SHEETS:
         last_col = last_col_for(name)
-        cols = f"B:{get_column_letter(last_col)}"
+        cols = f"B (attribute), C:{get_column_letter(last_col)}"
         orig_cells = read_sheet(args.orig, name, last_col)
         wip_cells = read_sheet(args.wip, name, last_col)
 
@@ -244,7 +254,7 @@ def main():
         for d in diffs:
             details.append(list(d))
             if is_num(d[-1]):
-                details.cell(row=details.max_row, column=8).number_format = "0.000"
+                details.cell(row=details.max_row, column=7).number_format = "0.000"
         total += len(diffs)
         rows = (f"{args.start_row}-{max_row} -> "
                 f"{args.start_row + args.offset}-{max_row + args.offset}")
@@ -255,8 +265,8 @@ def main():
                 cell.fill = DIFF_FILL
         print(f"{name:<12} {status:<10} {len(diffs)} difference(s)")
 
-    for ws, widths in ((summary, [14, 18, 24, 22, 14]),
-                       (details, [12, 14, 10, 40, 40, 18, 18, 26])):
+    for ws, widths in ((summary, [14, 22, 24, 22, 14]),
+                       (details, [12, 14, 10, 42, 18, 18, 26])):
         for i, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
     details.freeze_panes = "A2"

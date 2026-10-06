@@ -1,14 +1,18 @@
 # Vintage workbook compare
 
-Cell-by-cell **value** comparison of `Digital Vantage.xlsb` (base) vs `Digital by Vantage WIP.xlsb` (WIP).
+Cell-by-cell **value** comparison of `Digital Vantage.xlsb` (original) vs `Digital by Vantage WIP.xlsb` (WIP).
 
-- Only sheets `VintageSummary`, `Vintage1` … `Vintage24` are read; all other sheets, charts and formulas are ignored (cached values only).
-- Columns compared: `B:Z` on VintageSummary and Vintage1, `B:Y` on Vintage2–Vintage24.
-- Column A and rows 1–13 are copied as is; rows 14+ show `WIP - Base` (text cells show `Base -> WIP` when they differ).
+- Only sheets `Vintage1` … `Vintage24` are read; all other sheets, charts and formulas are ignored (cached values only).
+- Columns compared: `B:Z` on Vintage1, `B:Y` on Vintage2–Vintage24.
+- **Row offset:** WIP has an extra row inserted, so original row 9 is compared with WIP row 10, 10 with 11, and so on. Rows 1–8 are skipped; WIP row 9 (the new row) is not compared.
+- Column A (attribute) comes from the original; a WIP label mismatch is flagged to catch misaligned rows.
+- Original rows 9–13 are copied as is; rows 14+ show `WIP - Original` (text cells show `Original -> WIP` when they differ).
 
 ```bash
 pip install pyxlsb openpyxl
 python compare_vintage.py "Digital Vantage.xlsb" "Digital by Vantage WIP.xlsb" -o vintage_comparison.xlsx
 ```
 
-Output workbook: `Summary`, `Differences` (every differing cell), and one tab per sheet with deltas (differences highlighted red).
+Optional: `--start-row 9 --offset 1 --header-last-row 13 --tolerance 1e-9`.
+
+Output workbook: `Summary`, `Differences` (every differing cell with original and WIP cell addresses), and one tab per sheet laid out on the original row numbers with a `WIP row` column; differences highlighted red.

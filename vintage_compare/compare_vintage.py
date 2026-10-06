@@ -17,12 +17,15 @@ Rules
 -----
 * Values only: .xlsb stores the last calculated value of every cell, and
   that is what is read. Formulas and charts are ignored.
-* Column A is copied as is from the original (the row's attribute label).
-  If the WIP label on the paired row is different it is flagged - a quick
-  check that the rows really line up.
+* Report column A = attribute (col A) from the original row,
+  report column B = attribute (col A) from the paired WIP row, so you can
+  see both side by side. If they differ the row is flagged - a quick check
+  that the rows really line up. Source columns B..Z therefore appear one
+  column to the right in the report (row 8 shows the source column letter).
 * Original rows 9-13 are copied as is (header block).
 * Original rows 14+ show the delta:
-      numbers      -> WIP - Original
+      numbers      -> WIP - Original, rounded to 3 decimals
+                      (a delta that rounds to 0.000 counts as a match)
       text/blank   -> blank if equal, otherwise "Original -> WIP"
 * Compared columns: B..Z on Vintage1, B..Y on Vintage2..Vintage24.
 
@@ -37,7 +40,7 @@ Usage
 -----
     pip install pyxlsb openpyxl
     python compare_vintage.py "Digital Vantage.xlsb" "Digital by Vantage WIP.xlsb"
-    python compare_vintage.py orig.xlsb wip.xlsb -o my_report.xlsx --tolerance 0.0001
+    python compare_vintage.py orig.xlsb wip.xlsb -o my_report.xlsx --decimals 3
 """
 
 import argparse
@@ -52,6 +55,7 @@ from pyxlsb import open_workbook
 START_ROW = 9             # first original row compared (rows 1-8 skipped)
 WIP_ROW_OFFSET = 1        # WIP row = original row + 1
 HEADER_LAST_ROW = 13      # original rows START_ROW..13 are printed as is
+DECIMALS = 3              # deltas are rounded to this many decimals
 FIRST_COL = 2             # column B
 FULL_LAST_COL = 26        # column Z (Vintage1)
 SHORT_LAST_COL = 25       # column Y (Vintage2..Vintage24)
@@ -92,12 +96,12 @@ def is_num(v):
     return isinstance(v, Number) and not isinstance(v, bool)
 
 
-def compare_values(orig, wip, tolerance):
+def compare_values(orig, wip, decimals):
     """Return (is_different, delta_to_display)."""
     if is_num(orig) or is_num(wip):
         if (is_num(orig) or orig is None) and (is_num(wip) or wip is None):
-            delta = (wip or 0) - (orig or 0)
-            if abs(delta) <= tolerance:
+            delta = round((wip or 0) - (orig or 0), decimals)
+            if delta == 0:
                 return False, 0
             return True, delta
         # number vs text
@@ -114,7 +118,8 @@ def compare_sheet(sheet_name, orig_cells, wip_cells, args):
     max_wip = max([r - offset for r, _ in wip_cells] + [args.start_row])
     max_row = max(max_orig, max_wip)
 
-    grid = {}          # (orig_row, col) -> value to write in the report tab
+    grid = {}          # (orig_row, source col) -> value to write in the report tab
+    wip_labels = {}    # orig_row -> WIP attribute on the paired row
     flagged = set()    # cells to highlight
     diffs = []
 
@@ -122,10 +127,11 @@ def compare_sheet(sheet_name, orig_cells, wip_cells, args):
         wr = r + offset
         label = orig_cells.get((r, 1))
         wip_label = wip_cells.get((wr, 1))
-        grid[(r, 1)] = label if label is not None else wip_label
+        grid[(r, 1)] = label
+        wip_labels[r] = wip_label
         if label != wip_label:
             flagged.add((r, 1))
-            diffs.append((sheet_name, f"A{r}", f"A{wr}", label, label, wip_label,
+            diffs.append((sheet_name, f"A{r}", f"A{wr}", label, wip_label, label, wip_label,
                           "label differs - check row alignment"))
 
         for c in range(FIRST_COL, last_col + 1):
@@ -136,35 +142,52 @@ def compare_sheet(sheet_name, orig_cells, wip_cells, args):
                 grid[(r, c)] = o if o is not None else w
                 if o != w:
                     flagged.add((r, c))
-                    diffs.append((sheet_name, f"{col}{r}", f"{col}{wr}", label, o, w,
-                                  "header differs"))
+                    diffs.append((sheet_name, f"{col}{r}", f"{col}{wr}", label, wip_label,
+                                  o, w, "header differs"))
                 continue
-            different, delta = compare_values(o, w, args.tolerance)
+            different, delta = compare_values(o, w, args.decimals)
             grid[(r, c)] = delta
             if different:
                 flagged.add((r, c))
-                diffs.append((sheet_name, f"{col}{r}", f"{col}{wr}", label, o, w, delta))
+                diffs.append((sheet_name, f"{col}{r}", f"{col}{wr}", label, wip_label,
+                              o, w, delta))
 
-    return grid, flagged, diffs, max_row, last_col
+    return grid, wip_labels, flagged, diffs, max_row, last_col
 
 
-def write_sheet_tab(ws, grid, flagged, max_row, last_col, args):
-    wip_col = last_col + 2
-    ws.cell(row=args.start_row - 1, column=wip_col, value="WIP row").font = BOLD
+def write_sheet_tab(ws, grid, wip_labels, flagged, max_row, last_col, args):
+    """Layout: A = original attribute, B = WIP attribute, then source columns
+    B..last_col shifted one to the right, then the paired WIP row number."""
+    hdr = args.start_row - 1
+    wip_row_col = last_col + 3
+    ws.cell(row=hdr, column=1, value="Attribute (Original)").font = BOLD
+    ws.cell(row=hdr, column=2, value="Attribute (WIP)").font = BOLD
+    for c in range(FIRST_COL, last_col + 1):
+        ws.cell(row=hdr, column=c + 1, value=get_column_letter(c)).font = GREY
+    ws.cell(row=hdr, column=wip_row_col, value="WIP row").font = BOLD
+
     for r in range(args.start_row, max_row + 1):
-        ws.cell(row=r, column=wip_col, value=r + args.offset).font = GREY
+        ws.cell(row=r, column=wip_row_col, value=r + args.offset).font = GREY
+        if wip_labels.get(r) is not None:
+            cell = ws.cell(row=r, column=2, value=wip_labels[r])
+            cell.font = BOLD
+            if (r, 1) in flagged:
+                cell.fill = DIFF_FILL
     for (r, c), v in grid.items():
         if v is None:
             continue
-        cell = ws.cell(row=r, column=c, value=v)
+        cell = ws.cell(row=r, column=1 if c == 1 else c + 1, value=v)
         if r <= args.header_last_row or c == 1:
             cell.font = BOLD
+        elif is_num(v):
+            cell.number_format = "0.000"
         if (r, c) in flagged:
             cell.fill = DIFF_FILL
-    ws.freeze_panes = ws.cell(row=args.header_last_row + 1, column=2)
+    ws.freeze_panes = ws.cell(row=args.header_last_row + 1, column=3)
     ws.column_dimensions["A"].width = 40
+    ws.column_dimensions["B"].width = 40
     for c in range(FIRST_COL, last_col + 1):
-        ws.column_dimensions[get_column_letter(c)].width = 14
+        ws.column_dimensions[get_column_letter(c + 1)].width = 14
 
 
 def main():
@@ -173,8 +196,9 @@ def main():
     p.add_argument("orig", nargs="?", default="Digital Vantage.xlsb")
     p.add_argument("wip", nargs="?", default="Digital by Vantage WIP.xlsb")
     p.add_argument("-o", "--output", default="vintage_comparison.xlsx")
-    p.add_argument("--tolerance", type=float, default=1e-9,
-                   help="numeric differences with abs value <= this are treated as equal")
+    p.add_argument("--decimals", type=int, default=DECIMALS,
+                   help=f"round deltas to this many decimals; 0 after rounding = match "
+                        f"(default {DECIMALS})")
     p.add_argument("--start-row", type=int, default=START_ROW,
                    help=f"first original row to compare (default {START_ROW})")
     p.add_argument("--offset", type=int, default=WIP_ROW_OFFSET,
@@ -188,8 +212,8 @@ def main():
     summary.title = "Summary"
     summary.append(["Sheet", "Columns compared", "Rows (Original -> WIP)", "Status", "Differences"])
     details = out.create_sheet("Differences")
-    details.append(["Sheet", "Original cell", "WIP cell", "Attribute (col A)",
-                    "Original", "WIP", "Delta (WIP - Original)"])
+    details.append(["Sheet", "Original cell", "WIP cell", "Attribute (Original)",
+                    "Attribute (WIP)", "Original", "WIP", "Delta (WIP - Original)"])
     for ws in (summary, details):
         for cell in ws[1]:
             cell.font = BOLD
@@ -214,10 +238,13 @@ def main():
             print(f"{name:<12} {status}")
             continue
 
-        grid, flagged, diffs, max_row, last_col = compare_sheet(name, orig_cells, wip_cells, args)
-        write_sheet_tab(out.create_sheet(name), grid, flagged, max_row, last_col, args)
+        grid, wip_labels, flagged, diffs, max_row, last_col = compare_sheet(
+            name, orig_cells, wip_cells, args)
+        write_sheet_tab(out.create_sheet(name), grid, wip_labels, flagged, max_row, last_col, args)
         for d in diffs:
             details.append(list(d))
+            if is_num(d[-1]):
+                details.cell(row=details.max_row, column=8).number_format = "0.000"
         total += len(diffs)
         rows = (f"{args.start_row}-{max_row} -> "
                 f"{args.start_row + args.offset}-{max_row + args.offset}")
@@ -229,7 +256,7 @@ def main():
         print(f"{name:<12} {status:<10} {len(diffs)} difference(s)")
 
     for ws, widths in ((summary, [14, 18, 24, 22, 14]),
-                       (details, [12, 14, 10, 40, 18, 18, 26])):
+                       (details, [12, 14, 10, 40, 40, 18, 18, 26])):
         for i, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
     details.freeze_panes = "A2"

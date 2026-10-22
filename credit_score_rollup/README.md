@@ -1,5 +1,25 @@
 # Segment heat map
 
+Two notebooks live here:
+
+- **`02_heatmap_22.ipynb`** - the month-over-month segment heat map, with actuals.
+- **`03_signoff_compare.ipynb`** - three sign-off workbooks side by side (below).
+
+## Sign-off comparison
+
+`03_signoff_compare.ipynb` pulls four tabs - `TF 7599 DSP Rule` and the three
+`Experian DSP $75 Rule` bands - out of the September, October and November sign-off
+workbooks and lays them side by side.
+
+Line names come from column **G, rows 9-35**, and the figures from **H, I and J**, which
+are years 1, 2 and 3. `YEARS` picks which of those is shown; one entry means the columns
+under each line item are just the three months. `INCOME STATEMENT` and `CASH FLOW` name
+sections rather than carry figures, so they become the band across the top, and blank rows
+are dropped. One row per tab.
+
+It writes `signoff_compare.html`, `signoff_compare_artifact.html` and
+`signoff_compare.xlsx` - the same pair of outputs as the heat map, without the actuals.
+
 `02_heatmap_22.ipynb` is the current notebook. Only the settings cell is meant to be edited.
 
 ## Roll-up tabs

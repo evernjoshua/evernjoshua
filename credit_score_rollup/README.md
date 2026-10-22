@@ -11,9 +11,12 @@ Two notebooks live here:
 `Experian DSP $75 Rule` bands - out of the September, October and November sign-off
 workbooks and lays them side by side.
 
-Line names come from column **G, rows 9-35**, and the figures from **H, I and J**, which
-are years 1, 2 and 3. `YEARS` picks which of those is shown; one entry means the columns
-under each line item are just the three months. `INCOME STATEMENT` and `CASH FLOW` name
+Line names come from column **G, rows 9-35**, and the figures from **H through L** -
+years 1 to 5. Nothing to the right of L is read: a column named in `YEARS` that falls
+outside `H:L` is dropped before any workbook is opened, and cell 3 says which. `YEARS`
+picks which periods appear; comment one out and it leaves the table. All five plus three
+months is 15 columns under every line item, so the page is wide - trim `YEARS` to the
+periods you actually sign off on if that is more than you need. `INCOME STATEMENT` and `CASH FLOW` name
 sections rather than carry figures, so they become the band across the top, and blank rows
 are dropped. One row per tab.
 

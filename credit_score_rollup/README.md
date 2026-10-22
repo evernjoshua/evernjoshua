@@ -11,6 +11,13 @@ Two notebooks live here:
 `Experian DSP $75 Rule` bands - out of the September, October and November sign-off
 workbooks and lays them side by side.
 
+Those four were renamed: they used to be `TF 4999 DSP Rule` and `Experian DSP $49 Rule`,
+so an older sign-off still carries the old name. `SHEET_ALIASES` lists the former names
+against the current ones, each tab is looked up under its current name first and then
+under every former one, and the row keeps the current name whichever matched. Cell 3 and
+the page footer both say which workbook used which - a rename partway through a series is
+exactly what quietly breaks a comparison.
+
 Line names come from column **G, rows 9-35**, and the figures from **H through L** -
 years 1 to 5. Nothing to the right of L is read: a column named in `YEARS` that falls
 outside `H:L` is dropped before any workbook is opened, and cell 3 says which. `YEARS`

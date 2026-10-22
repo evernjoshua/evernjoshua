@@ -5,58 +5,33 @@ Two notebooks live here:
 - **`02_heatmap_22.ipynb`** - the month-over-month segment heat map, with actuals.
 - **`03_signoff_compare.ipynb`** - three sign-off workbooks side by side (below).
 
-## Sign-off comparison
+## Sign-off journey
 
-`03_signoff_compare.ipynb` pulls four tabs - `TF 7599 DSP Rule` and the three
-`Experian DSP $75 Rule` bands - out of the September, October and November sign-off
-workbooks and lays them side by side.
+`03_signoff_compare.ipynb` follows the same lines through three sign-offs, so a number
+that looks wrong in the latest one can be traced back to the month it moved.
 
-Those four were renamed: they used to be `TF 4999 DSP Rule` and `Experian DSP $49 Rule`,
-so an older sign-off still carries the old name. `SHEET_ALIASES` lists the former names
-against the current ones, each tab is looked up under its current name first and then
-under every former one, and the row keeps the current name whichever matched. Cell 3 and
-the page footer both say which workbook used which - a rename partway through a series is
-exactly what quietly breaks a comparison.
+Four tabs - `TF 7599 DSP Rule` and the three `Experian DSP $75 Rule` bands - out of the
+September, October and November workbooks. Those four were renamed: they used to be
+`TF 4999 DSP Rule` and `Experian DSP $49 Rule`, so each is looked up under its current
+name first and then under every former name in `SHEET_ALIASES`. The row keeps the current
+name whichever matched, and cell 3 and the page footer both say which workbook used which.
 
-Line names come from column **G, rows 9-35**, and the figures from **H through L** -
-years 1 to 5. Nothing to the right of L is read: a column named in `YEARS` that falls
-outside `H:L` is dropped before any workbook is opened, and cell 3 says which. `YEARS`
-picks which periods appear; comment one out and it leaves the table. All five plus three
-months is 15 columns under every line item, so the page is wide - trim `YEARS` to the
-periods you actually sign off on if that is more than you need. `INCOME STATEMENT` and `CASH FLOW` name
-sections rather than carry figures, so they become the band across the top, and blank rows
-are dropped. One row per tab.
+Line names come from column **G rows 9-35**, figures from **H, I and J** - years 1 to 3.
+Nothing to the right of J is read: a column named in `YEARS` outside `H:J` is dropped
+before a workbook is opened.
 
-It writes `signoff_compare.html`, `signoff_compare_artifact.html` and
-`signoff_compare.xlsx` - the same pair of outputs as the heat map, without the actuals.
+**What moved** sits at the top of the page - the largest changes into the latest sign-off,
+ranked. Underneath, one table per tab with the lines down the page and each year reading
+left to right: a month, what changed, the next month.
 
-`02_heatmap_22.ipynb` is the current notebook. Only the settings cell is meant to be edited.
+A change is measured against the **larger** of the two figures rather than the earlier
+one, so a line creeping up off a near-zero base cannot outrank one that halved, and a sign
+change is not infinite. Change cells are inked by how far the line moved - intensity only,
+never good or bad, since what counts as good differs line by line. `BIG_MOVE` sets what
+counts as fully inked.
 
-## Roll-up tabs
-
-| segment tabs | roll-up tab |
-| --- | --- |
-| `CSOX $39` | `Credit Sesame $39_ALL` |
-| `AMEX DCO $39` | `AMEX DCO $39_ALL` |
-| `BrightMoney $39` | `BrightMoney $39_ALL` |
-| `Organic $39` | `ORGANIC $39_ALL` |
-| `MoneyLion DCO $39` | `MoneyLion DCO $39_ALL` |
-| `Creditcards.com $75` | `CREDITCARDS.COM_ALL` |
-| `MoneyLion DCO $75` | `MoneyLion DCO $75_ALL` |
-| `Google $75` | `Google PQ Paid Search_ALL` |
-| `CSOX $75` | `Credit Sesame $75_ALL` |
-| `Credit Karma $95` | `Credit Karma $95_ALL` |
-| `CK Wander $95` | `Credit Karma WANDER_ALL` |
-| `EXPX Wander $95` | `EXPERIAN WANDER_ALL` |
-| `Organic $95` + `Organic Wander $95` | `ORGANIC X5 and Wander_ALL` |
-| `CSOX $95` + `CSOX Wander $95` | `Credit Sesame X5 and Wander_ALL` |
-
-Two families can name the same roll-up tab, and then one roll-up row is written after
-the last tab of either family.
-
-`Credit Karma $0_ALL`, `Experian $0_ALL`, `AMEX DCO $0_ALL`, `ORGANIC $0_ALL` and
-`Organic Omni $0_ALL` have no segments behind them. They are listed in `ROLLUP_ONLY` and
-written one after the other at the bottom, in that order.
+Outputs: `signoff_journey.html`, `signoff_journey_artifact.html` and
+`signoff_journey.xlsx` - a sheet per tab plus a filterable Movers sheet.
 
 ## Which tabs come in
 

@@ -2,7 +2,7 @@
 
 Two notebooks live here:
 
-- **`02_heatmap_22.ipynb`** - the month-over-month segment heat map, with actuals.
+- **`02_heatmap_23.ipynb`** - the month-over-month segment heat map, with actuals.
 - **`03_signoff_compare.ipynb`** - three sign-off workbooks side by side (below).
 
 ## Sign-off journey
@@ -147,6 +147,14 @@ Written underneath the heat map, on their own colour scale (`CAMPAIGN_TOTALS`):
 | `Campaign Total` | `Digital_ALL` |
 
 ## Version history
+
+### v23
+
+- `MoneyLion $75 601-6` and `MoneyLion $75 <=600` added to `EXTRA_SEGMENTS`. Both sit
+  before `Secured Card<=600`, so the sweep never reached them and only the separately
+  named `MoneyLion DCO $75 <=600` was coming through. Plain MoneyLion is its own
+  product, with its own `MoneyLion $75_ALL` roll-up, and `BRAND_ORDER` already had a
+  slot for it - third, ahead of MoneyLion DCO at seventh.
 
 ### v22
 

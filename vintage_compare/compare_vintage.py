@@ -1,5 +1,5 @@
 """
-Cell-by-cell value comparison of two .xlsb workbooks with a row offset.
+Cell-by-cell value comparison of two .xlsb workbooks with inserted-row alignment.
 
 Compares ONLY these sheets (every other sheet is never opened):
     Vintage1, Vintage2, ... Vintage24
@@ -12,11 +12,13 @@ Sheet layout assumed
 
 Row alignment
 -------------
-A new row was inserted in the WIP file, so from row 9 down every WIP row is
-one lower than in the original:
-    Original row 9  <->  WIP row 10
-    Original row 10 <->  WIP row 11   ... and so on.
-WIP row 9 (the new row) has no original counterpart and is not compared.
+Rows match one-to-one until a row that was inserted in the WIP file. That
+WIP row is skipped and every row after it is one lower in WIP. By default
+WIP row 201 is the inserted row:
+    Original row 1..200  <->  WIP row 1..200
+    Original row 201     <->  WIP row 202
+    Original row 202     <->  WIP row 203   ... and so on to the end.
+Several inserted rows can be given with --inserted-wip-rows (e.g. 9 201).
 
 Report tab per sheet (same row numbers and column letters as the ORIGINAL)
 --------------------------------------------------------------------------
@@ -56,7 +58,7 @@ from openpyxl.utils import get_column_letter
 from pyxlsb import open_workbook
 
 START_ROW = 9             # first original row compared
-WIP_ROW_OFFSET = 1        # WIP row = original row + 1
+INSERTED_WIP_ROWS = [201] # WIP rows that were added and have no original row
 HEADER_LAST_ROW = 13      # original rows START_ROW..13 are printed as is
 DECIMALS = 3              # deltas are rounded to this many decimals
 NOTE_COL = 1              # column A - section notes, copied as is
@@ -119,11 +121,19 @@ def compare_values(orig, wip, decimals):
     return True, f"{'' if orig is None else orig} -> {'' if wip is None else wip}"
 
 
+def wip_row(r, inserted):
+    """Map an original row number to its WIP row, skipping inserted WIP rows."""
+    w = r
+    for k in sorted(inserted):
+        if w >= k:
+            w += 1
+    return w
+
+
 def compare_sheet(sheet_name, orig_cells, wip_cells, args):
     last_col = last_col_for(sheet_name)
-    offset = args.offset
     max_orig = max([r for r, _ in orig_cells] + [args.start_row])
-    max_wip = max([r - offset for r, _ in wip_cells] + [args.start_row])
+    max_wip = max([r for r, _ in wip_cells] + [args.start_row]) - len(args.inserted_wip_rows)
     max_row = max(max_orig, max_wip)
 
     grid = {}          # (orig_row, col) -> value to write in the report tab
@@ -137,7 +147,7 @@ def compare_sheet(sheet_name, orig_cells, wip_cells, args):
             grid[(r, c)] = v
 
     for r in range(args.start_row, max_row + 1):
-        wr = r + offset
+        wr = wip_row(r, args.inserted_wip_rows)
         grid[(r, NOTE_COL)] = orig_cells.get((r, NOTE_COL))
         label = orig_cells.get((r, LABEL_COL))
         wip_label = wip_cells.get((wr, LABEL_COL))
@@ -178,7 +188,7 @@ def write_sheet_tab(ws, grid, wip_labels, flagged, max_row, last_col, args):
     ws.cell(row=hdr, column=wip_label_col, value="WIP attribute (if different)").font = BOLD
 
     for r in range(args.start_row, max_row + 1):
-        ws.cell(row=r, column=wip_row_col, value=r + args.offset).font = GREY
+        ws.cell(row=r, column=wip_row_col, value=wip_row(r, args.inserted_wip_rows)).font = GREY
         if r in wip_labels:
             cell = ws.cell(row=r, column=wip_label_col, value=wip_labels[r])
             cell.fill = DIFF_FILL
@@ -211,8 +221,9 @@ def main():
                         f"(default {DECIMALS})")
     p.add_argument("--start-row", type=int, default=START_ROW,
                    help=f"first original row to compare (default {START_ROW})")
-    p.add_argument("--offset", type=int, default=WIP_ROW_OFFSET,
-                   help=f"WIP row = original row + offset (default {WIP_ROW_OFFSET})")
+    p.add_argument("--inserted-wip-rows", type=int, nargs="*", default=INSERTED_WIP_ROWS,
+                   help="WIP row numbers that were inserted and have no original row; "
+                        f"each shifts the rows after it down by one (default {INSERTED_WIP_ROWS})")
     p.add_argument("--header-last-row", type=int, default=HEADER_LAST_ROW,
                    help=f"last original row printed as is (default {HEADER_LAST_ROW})")
     args = p.parse_args()
@@ -230,8 +241,9 @@ def main():
 
     total = 0
     print(f"Original: {args.orig}\nWIP     : {args.wip}")
-    print(f"Original row {args.start_row} <-> WIP row {args.start_row + args.offset} "
-          f"(offset +{args.offset}); rows up to {args.header_last_row} printed as is\n")
+    skipped = ", ".join(str(k) for k in sorted(args.inserted_wip_rows)) or "none"
+    print(f"Comparing from original row {args.start_row}; inserted WIP rows skipped: {skipped}; "
+          f"rows up to {args.header_last_row} printed as is\n")
     for name in SHEETS:
         last_col = last_col_for(name)
         cols = f"B (attribute), C:{get_column_letter(last_col)}"
@@ -257,7 +269,8 @@ def main():
                 details.cell(row=details.max_row, column=7).number_format = "0.000"
         total += len(diffs)
         rows = (f"{args.start_row}-{max_row} -> "
-                f"{args.start_row + args.offset}-{max_row + args.offset}")
+                f"{wip_row(args.start_row, args.inserted_wip_rows)}-"
+                f"{wip_row(max_row, args.inserted_wip_rows)} (WIP skips {skipped})")
         status = "MATCH" if not diffs else "DIFFERENT"
         summary.append([name, cols, rows, status, len(diffs)])
         if diffs:

@@ -1,6 +1,65 @@
 # Getting the actuals out of Snowflake
 
-Three files. The query shapes the data the way the heat map reads it, the runner
+Built on the BAU VCR query, kept verbatim in `vcr_base.sql`.
+
+| file | |
+| --- | --- |
+| `discover_dimensions.sql` | run first - the AcqSource / Branding / Fee values that actually exist |
+| `vcr_base.sql` | the BAU VCR query, untouched, for reference |
+| `vcr_actuals.sql` | the BAU query extended into the actuals the heat map reads |
+| `export_actuals.py` | runs it, writes `actuals.csv` |
+| `check_actuals.py` | says what the heat map will and will not find in that CSV |
+| `actuals.sql` | the generic version, if you ever source actuals from somewhere else |
+
+## What vcr_actuals.sql changes, and why
+
+**It widens the reporting window** to 2023-01-01 .. 2026-10-31. The heat map wants
+figures *cumulative* to MOB 12, 24 and 36, and a cumulative figure needs every month from
+the account's first through its twelfth. The BAU window of 2026-01-01 .. 2026-09-30 is
+nine months, so it would only catch whichever MOBs happened to land inside it - most
+vintages would come out short or empty. This is not optional for cumulative figures.
+
+**It cumulates the flows and not the stocks.** Charge-offs, revenue, expenses, fees and
+cash flow happen *in* a month, so they are summed from MOB 1 to the MOB in question.
+Receivables, active and inactive counts, buckets, reserves and credit line are balances,
+so they are taken as at that MOB. Summing a balance across months would be meaningless.
+64 columns are treated as flows and 35 as stocks; the split is at the top of the
+generator that wrote the file.
+
+**It collapses to roll-up grain** - `Branding` and `OriginalCreditLine` both `'All'` -
+because that is the only grain the heat map joins on, and a single credit-line slice can
+read 0% or 100% charge-off.
+
+**Every VCR attribute and measure is carried through**, so the CSV is a superset of what
+the heat map needs.
+
+## Two things to do before it runs
+
+1. **`name_map`** in `vcr_actuals.sql` - your `AcqSource` / `Branding` / `Fee` against
+   the names the heat map expects. The right-hand side is pre-filled with all of them,
+   generated from the notebook's own `ROLLUP_SHEETS`, `ROLLUP_ONLY` and
+   `CAMPAIGN_TOTALS`. Run `discover_dimensions.sql` to see what to put on the left.
+2. **The three rate definitions**, in the `rates` block near the end. Everything else is
+   arithmetic on the BAU query's own columns, but the BAU query leaves pre-tax income to
+   "existing calculation upstream in VCR", so `CumulativeROA`, `CumPTI` and `CumNetDollar`
+   rest on a definition I had to write. Check it against the VCR's own. The components
+   are all in the output, so a correction changes one expression and nothing else.
+
+## The Vantage band rows
+
+The query also emits a row per `VantageRange`, which is what the heat map's
+`Vantage <=600`, `Vantage 601-639` and `Vantage 640+` rows need. Their tab names carry no
+`_ALL`, so the key cannot be rebuilt from segment and fee - add this to the notebook:
+
+```python
+ACTUALS_ALIASES = {
+    "<=600":   "<=600_All",
+    "601-639": "601-639_All",
+    "640+":    "640+_All",
+}
+```
+
+## Three files. The query shapes the data the way the heat map reads it, the runner
 writes the CSV, and the checker tells you whether the heat map will actually find
 anything in it before you run the notebook.
 

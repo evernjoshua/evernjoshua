@@ -69,8 +69,10 @@ def main():
                  f"the SOURCE table and name_map first")
 
     with connect() as cx:
-        cur = cx.cursor()
-        cur.execute(sql)
+        # the file is SET, SET, then the query, so it has to go through
+        # execute_string; the last statement is the one with the rows
+        cursors = cx.execute_string(sql)
+        cur = cursors[-1]
         cols = [d[0] for d in cur.description]
         rows = cur.fetchall()
 

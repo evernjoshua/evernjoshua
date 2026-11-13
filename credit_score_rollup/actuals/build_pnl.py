@@ -1,7 +1,12 @@
 """Build the P&L columns for the heat map's actuals, from the VCR CSV.
 
-Two stages, in the order the spec document lays them out:
+Three stages:
 
+  aggregate_to_cohort  the extract is one row per account per month, so the
+                       rows are summed to one per cohort x MOB. The 0/1 flags
+                       (ChargeOffIndicator, ActiveAccountIndicator) become
+                       counts of accounts. Already-aggregated input passes
+                       through unchanged.
   add_pnl_lines(df)    the monthly P&L - revenues, provision, servicing and
                        other expenses, pretax income.
   add_cumulative(df)   the cumulative measures the heat map reads - cumulative
@@ -65,6 +70,61 @@ def _col(df, name, *, missing):
 def grain_keys(df):
     """The cohort keys actually present in this CSV, in spec order."""
     return [k for k in GRAIN_KEYS if k in df.columns]
+
+
+# ------------------------------------------------------------- stage zero ----
+def aggregate_to_cohort(df, *, report=None):
+    """Sum the account-month rows to one row per cohort x MOB.
+
+    The extract carries one row per account, so ChargeOffIndicator and
+    ActiveAccountIndicator are 0/1 flags. Summing them turns each into a count
+    of accounts, which is what every rate below divides by. Input that is
+    already at cohort grain has one row per group and passes through unchanged.
+    """
+    notes = report if report is not None else []
+    keys = grain_keys(df)
+    if not keys:
+        raise SpecGap("no cohort columns found; expected some of "
+                      + ", ".join(GRAIN_KEYS))
+    if MOB_KEY not in df.columns:
+        raise SpecGap(f"{MOB_KEY} is not in the CSV")
+
+    group_keys = keys + [MOB_KEY]
+    account_key = spec.ACCOUNT_KEY if spec.ACCOUNT_KEY in df.columns else None
+
+    measures = [c for c in df.columns
+                if c not in group_keys and c != account_key
+                and pd.api.types.is_numeric_dtype(df[c])]
+    averaged = [c for c in spec.AVERAGE_COLUMNS if c in measures]
+    summed = [c for c in measures if c not in averaged]
+    dropped = [c for c in df.columns
+               if c not in group_keys and c != account_key and c not in measures]
+
+    how = {c: "sum" for c in summed}
+    how.update({c: "mean" for c in averaged})
+    g = df.groupby(group_keys, dropna=False, observed=True)
+    out = g.agg(how)
+
+    # how many accounts went into each cohort-month
+    if account_key is not None:
+        out[spec.ACCOUNTS_COLUMN] = g[account_key].nunique()
+    else:
+        out[spec.ACCOUNTS_COLUMN] = g.size()
+    out = out.reset_index()
+
+    if len(out) == len(df):
+        notes.append(f"already one row per cohort x MOB ({len(df):,} rows); "
+                     f"nothing to sum")
+    else:
+        per = len(df) / len(out)
+        notes.append(f"summed {len(df):,} account-month rows to {len(out):,} "
+                     f"cohort-month rows ({per:,.1f} accounts per cohort-month)")
+    if averaged:
+        notes.append("averaged rather than summed: " + ", ".join(averaged))
+    if dropped:
+        notes.append("non-numeric columns dropped by the sum: "
+                     + ", ".join(dropped))
+    return out
 
 
 # ------------------------------------------------------------- stage one ----
@@ -234,6 +294,7 @@ def add_cumulative(df, *, unit_co_denominator=None, report=None):
     out["_co_unit"] = _col(out, spec.CHARGE_OFF_UNITS, missing=missing)
     cum_co_unit = out.groupby(keys, sort=False, dropna=False)["_co_unit"].cumsum()
     del out["_co_unit"]
+    out["Cumul. Charge-Off Accounts"] = cum_co_unit
     boards, denom = _unit_denominator(out, keys, unit_co_denominator, missing, notes)
     out[L_BOARDS] = boards
     out[L_UNIT_DEN] = denom
@@ -248,14 +309,26 @@ def add_cumulative(df, *, unit_co_denominator=None, report=None):
 def _unit_denominator(out, keys, mode, missing, notes):
     """Booked accounts less unwinds through MOB 4, or active accounts."""
     boards_m = _col(out, spec.BOARDS_COLUMN, missing=missing)
-    boards = boards_m.groupby([out[k] for k in keys]).transform("sum")
+    if boards_m.sum() == 0 and spec.ACCOUNTS_COLUMN in out.columns:
+        # no NewAccounts to sum; fall back to the most accounts ever seen
+        notes.append(f"{spec.BOARDS_COLUMN} is empty, so booked accounts come "
+                     f"from the peak {spec.ACCOUNTS_COLUMN} per cohort.")
+        boards = out.groupby([out[k] for k in keys])[spec.ACCOUNTS_COLUMN] \
+                    .transform("max").astype(float)
+    else:
+        boards = boards_m.groupby([out[k] for k in keys]).transform("sum")
     if mode == "active":
         active = _col(out, spec.ACTIVE_COLUMN, missing=missing)
-        notes.append(f"Unit C/O rate over active accounts "
-                     f"({spec.ACTIVE_COLUMN}), which moves with MOB.")
+        notes.append(f"Unit C/O rate = cumulative {spec.CHARGE_OFF_UNITS} / "
+                     f"{spec.ACTIVE_COLUMN}, both counts of accounts at cohort "
+                     f"level; the denominator moves with MOB.")
         if (active == 0).all():
             notes.append(f"WARNING - {spec.ACTIVE_COLUMN} is zero on every "
                          f"row, so the unit C/O rate is blank.")
+        elif active.max() <= 1:
+            notes.append(f"WARNING - {spec.ACTIVE_COLUMN} never exceeds 1, so "
+                         f"these rows look like single accounts rather than "
+                         f"cohorts. Run aggregate_to_cohort first.")
         return boards, active
     if mode != "boards_net_unwind":
         raise SpecGap(f"unknown unit_co_denominator {mode!r}")
@@ -297,7 +370,9 @@ PNL_COLUMNS = (
     + [L_FRAUD, L_CPA, L_AMEX, L_TOE, L_PTI]
 )
 CUMULATIVE_COLUMNS = [L_CUM_PTI, L_AVG_REC, L_CUM_NCO, L_CUM_ROA,
-                      L_BOARDS, L_UNIT_DEN, L_CUM_UNIT]
+                      L_BOARDS, "Cumul. Charge-Off Accounts",
+                      L_UNIT_DEN, L_CUM_UNIT]
+CUM_UNIT_NUMERATOR = "Cumul. Charge-Off Accounts"
 
 
 def build(csv_path, *, cpa=None, amex_share=None,
@@ -306,6 +381,7 @@ def build(csv_path, *, cpa=None, amex_share=None,
     notes = report if report is not None else []
     df = pd.read_csv(csv_path, low_memory=False)
     notes.append(f"{len(df):,} rows, {len(df.columns)} columns read from {csv_path}")
+    df = aggregate_to_cohort(df, report=notes)
     df = add_pnl_lines(df, cpa=cpa, amex_share=amex_share, report=notes)
     df = add_cumulative(df, unit_co_denominator=unit_co_denominator, report=notes)
     _checks, bad = reconcile(df)

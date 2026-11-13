@@ -67,6 +67,16 @@ AMEX_INCENTIVE = dict(
     months=24,                   # the /24
 )
 
+# ------------------------------------------------------------- aggregation --
+# The extract is one row per ACCOUNT per month, so ChargeOffIndicator and
+# ActiveAccountIndicator are 0/1 flags on a single account. Everything below
+# works at cohort level, so the rows are summed to one per cohort x MOB first:
+# the flags become counts of accounts.
+ACCOUNT_KEY = "AccountNumber"
+ACCOUNTS_COLUMN = "Accounts"          # the account count the sum produces
+# Summed like every other measure would be wrong for these - they are averaged.
+AVERAGE_COLUMNS = ["ACE2Score", "ACE4Score", "Vantage3score"]
+
 # ------------------------------------------------------------------- rates --
 # Cumulative net charge-off before recoveries
 #     = ChargeOffPrincipalAmount / Avg Total Gross Receivables - End of Period

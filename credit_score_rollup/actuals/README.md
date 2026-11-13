@@ -16,6 +16,17 @@ python3 build_pnl.py vcr_actuals.csv --unit-co-denominator boards_net_unwind
 python3 test_build_pnl.py
 ```
 
+## Stage 0 - sum to cohort level
+
+The extract is one row per **account** per month: it carries `AccountNumber`,
+and `ChargeOffIndicator` / `ActiveAccountIndicator` are 0/1 flags on a single
+account. `aggregate_to_cohort` sums the rows to one per cohort x MOB, which
+turns each flag into a count of accounts. Scores are averaged rather than
+summed; an extract already at cohort grain passes through unchanged.
+
+Skipping this is what makes the unit charge-off rate come out as 0% or 100% -
+the denominator is 1.
+
 ## Stage 1 - the monthly P&L
 
 The thirteen revenue lines, then `Miscellaneous Fees/Income` as
@@ -32,7 +43,7 @@ Each runs across MOB inside one vintage cohort:
 - `Avg Total Gross Receivables - End of Period` - running mean of `EndingReceivable`
 - `Cumul. Net Charge-Off Before Recoveries` - cumulative `ChargeOffPrincipalAmount` / that average
 - `Cumul. ROA - Annualized` - (cumulative pretax income / that average) / MOB x 12
-- `Cumul. Unit Charge-Off Rate` - cumulative `ChargeOffIndicator` / active accounts (`ActiveAccountIndicator`). The denominator moves with MOB, so the rate rises on both a bigger numerator and a shrinking book. Pass `--unit-co-denominator boards_net_unwind` for the other reading: booked accounts less unwinds through MOB 4, held constant across MOB.
+- `Cumul. Unit Charge-Off Rate` - the running count of accounts that have charged off (cumulative `ChargeOffIndicator`) over the count still active that month (`ActiveAccountIndicator`). Both are account counts after stage 0. The denominator shrinks as the book attrits, so the rate rises on both a bigger numerator and a smaller book. `Cumul. Charge-Off Accounts` and `Unit C/O Denominator` are written out alongside it so the division is visible. Pass `--unit-co-denominator boards_net_unwind` for the other reading: booked accounts less unwinds through MOB 4, constant across MOB.
 
 MOB 12 / 24 / 36 are the heat map's Yr 1 / Yr 2 / Yr 3.
 

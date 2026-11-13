@@ -73,7 +73,10 @@ AMEX_INCENTIVE = dict(
 # Cumulative ROA - Annualized
 #     = (Cumul. Pre-Tax Income / Avg Gross Receivables - EOP) / MOB * 12
 # Cumulative Unit Charge-Off Rate
-#     = ChargeOffIndicator / (booked accounts - unwinds up to MOB 4)
+#     = ChargeOffIndicator / active accounts
+# The other reading of the document's line is booked accounts less unwinds
+# through MOB 4; keep it available with unit_co_denominator="boards_net_unwind".
+UNIT_CO_DENOMINATOR = "active"
 UNWIND_THROUGH_MOB = 4
 RECEIVABLE_COLUMN  = "EndingReceivable"
 BOARDS_COLUMN      = "NewAccounts"

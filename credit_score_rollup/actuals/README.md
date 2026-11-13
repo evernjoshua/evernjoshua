@@ -12,6 +12,7 @@ spec document defines.
 
 ```
 python3 build_pnl.py vcr_actuals.csv -o vcr_with_pnl.csv --cpa 185 --amex-share 0.62
+python3 build_pnl.py vcr_actuals.csv --unit-co-denominator boards_net_unwind
 python3 test_build_pnl.py
 ```
 
@@ -31,7 +32,7 @@ Each runs across MOB inside one vintage cohort:
 - `Avg Total Gross Receivables - End of Period` - running mean of `EndingReceivable`
 - `Cumul. Net Charge-Off Before Recoveries` - cumulative `ChargeOffPrincipalAmount` / that average
 - `Cumul. ROA - Annualized` - (cumulative pretax income / that average) / MOB x 12
-- `Cumul. Unit Charge-Off Rate` - cumulative `ChargeOffIndicator` / booked accounts less unwinds through MOB 4 (`--unit-co-denominator active` for the other reading)
+- `Cumul. Unit Charge-Off Rate` - cumulative `ChargeOffIndicator` / active accounts (`ActiveAccountIndicator`). The denominator moves with MOB, so the rate rises on both a bigger numerator and a shrinking book. Pass `--unit-co-denominator boards_net_unwind` for the other reading: booked accounts less unwinds through MOB 4, held constant across MOB.
 
 MOB 12 / 24 / 36 are the heat map's Yr 1 / Yr 2 / Yr 3.
 

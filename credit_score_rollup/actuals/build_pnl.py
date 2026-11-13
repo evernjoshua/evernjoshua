@@ -194,10 +194,12 @@ def _vintage_month(df):
 
 
 # ------------------------------------------------------------- stage two ----
-def add_cumulative(df, *, unit_co_denominator="boards_net_unwind", report=None):
+def add_cumulative(df, *, unit_co_denominator=None, report=None):
     """Add the cumulative measures, running across MOB within each cohort."""
     notes = report if report is not None else []
     missing = []
+    if unit_co_denominator is None:
+        unit_co_denominator = spec.UNIT_CO_DENOMINATOR
     keys = grain_keys(df)
     if not keys:
         raise SpecGap("no cohort columns found; expected some of "
@@ -248,8 +250,13 @@ def _unit_denominator(out, keys, mode, missing, notes):
     boards_m = _col(out, spec.BOARDS_COLUMN, missing=missing)
     boards = boards_m.groupby([out[k] for k in keys]).transform("sum")
     if mode == "active":
-        notes.append("Unit C/O rate over active accounts.")
-        return boards, _col(out, spec.ACTIVE_COLUMN, missing=missing)
+        active = _col(out, spec.ACTIVE_COLUMN, missing=missing)
+        notes.append(f"Unit C/O rate over active accounts "
+                     f"({spec.ACTIVE_COLUMN}), which moves with MOB.")
+        if (active == 0).all():
+            notes.append(f"WARNING - {spec.ACTIVE_COLUMN} is zero on every "
+                         f"row, so the unit C/O rate is blank.")
+        return boards, active
     if mode != "boards_net_unwind":
         raise SpecGap(f"unknown unit_co_denominator {mode!r}")
     mob = _col(out, MOB_KEY, missing=missing)
@@ -294,7 +301,7 @@ CUMULATIVE_COLUMNS = [L_CUM_PTI, L_AVG_REC, L_CUM_NCO, L_CUM_ROA,
 
 
 def build(csv_path, *, cpa=None, amex_share=None,
-          unit_co_denominator="boards_net_unwind", report=None):
+          unit_co_denominator=None, report=None):
     """Read the VCR CSV and add every column above."""
     notes = report if report is not None else []
     df = pd.read_csv(csv_path, low_memory=False)
@@ -315,7 +322,7 @@ if __name__ == "__main__":
     ap.add_argument("-o", "--out", default="vcr_with_pnl.csv")
     ap.add_argument("--cpa", default=None)
     ap.add_argument("--amex-share", type=float, default=None)
-    ap.add_argument("--unit-co-denominator", default="boards_net_unwind",
+    ap.add_argument("--unit-co-denominator", default=None,
                     choices=["boards_net_unwind", "active"])
     a = ap.parse_args()
     cpa = a.cpa

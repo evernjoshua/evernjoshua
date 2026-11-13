@@ -106,12 +106,15 @@ def main():
               f"  ROA {r[bp.L_CUM_ROA]:>8.2%}"
               f"  unitC/O {r[bp.L_CUM_UNIT]:>7.2%}")
 
-    # the unit denominator is boards less early unwinds, constant across MOB
-    one = df[(df.Branding == "Credit Karma") & (df.vintage == "2024-01")]
-    assert one[bp.L_UNIT_DEN].nunique() == 1
-    assert (one[bp.L_UNIT_DEN] < one[bp.L_BOARDS]).all()
-    # and both cumulative series only ever rise
-    assert one.sort_values("MonthsOnBooks")[bp.L_CUM_UNIT].is_monotonic_increasing
+    # the default denominator is active accounts, which falls as MOB rises
+    assert spec.UNIT_CO_DENOMINATOR == "active"
+    one = df[(df.Branding == "Credit Karma") & (df.vintage == "2024-01")] \
+            .sort_values("MonthsOnBooks")
+    assert one[bp.L_UNIT_DEN].nunique() > 1, "active accounts move with MOB"
+    assert one[bp.L_UNIT_DEN].is_monotonic_decreasing
+    assert (one[bp.L_UNIT_DEN] <= one[bp.L_BOARDS]).all()
+    assert one[bp.L_CUM_UNIT].is_monotonic_increasing
+    assert (one[bp.L_UNIT_DEN] == one["ActiveAccountIndicator"]).all()
 
     # CPA and the Amex line, switched on
     log2 = []
@@ -142,12 +145,19 @@ def main():
     print(f"  24 instalments total {ck3[bp.L_AMEX].sum():,.2f}"
           f" = -(2.03 x 0.62 x {boards:,.0f} boards)")
 
-    # the active-accounts reading of the unit rate
-    alt = bp.add_cumulative(bp.add_pnl_lines(raw), unit_co_denominator="active")
-    a = alt[(alt.vintage == "2024-01") & (alt.MonthsOnBooks == 36)].iloc[0]
-    b = one[one.MonthsOnBooks == 36].iloc[0]
-    print(f"\nunit C/O at MOB 36, 2024-01: boards less unwinds "
-          f"{b[bp.L_CUM_UNIT]:.2%}  vs active accounts {a[bp.L_CUM_UNIT]:.2%}")
+    # the other reading of the unit rate, still available
+    alt = bp.add_cumulative(bp.add_pnl_lines(raw),
+                            unit_co_denominator="boards_net_unwind")
+    alt = alt[(alt.Branding == "Credit Karma") & (alt.vintage == "2024-01")]
+    assert alt[bp.L_UNIT_DEN].nunique() == 1, "boards net unwind is constant"
+    print("\nunit C/O rate, 2024-01 Credit Karma")
+    for mob in (12, 24, 36):
+        a = one[one.MonthsOnBooks == mob].iloc[0]
+        b = alt[alt.MonthsOnBooks == mob].iloc[0]
+        print(f"  MOB {mob:>2}  active accounts {a[bp.L_CUM_UNIT]:>7.2%}"
+              f"  (denom {a[bp.L_UNIT_DEN]:>8,.0f})"
+              f"   vs boards less unwinds {b[bp.L_CUM_UNIT]:>7.2%}"
+              f"  (denom {b[bp.L_UNIT_DEN]:>8,.0f})")
 
     print("\nall assertions passed")
 

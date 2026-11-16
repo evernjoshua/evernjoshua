@@ -49,8 +49,7 @@ Only the columns the solution needs, in this order:
 2. the source columns the formulas read
 3. everything computed from them
 
-The extract carries ~59 columns no formula touches, one of which Excel renders
-as the date `2-Apr`; writing them whole makes the header row unreadable.
+The extract carries ~59 columns no formula touches; none of them are written.
 `--derived-only` (or `keep_inputs=False`) drops the source columns too.
 
 `write_output` reads the file back after writing and raises if the header has

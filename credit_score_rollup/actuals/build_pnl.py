@@ -129,8 +129,8 @@ def select_output(df, *, keep_inputs=True):
     """Just the columns the solution needs, in order: the dimensions, then the
     source columns the formulas read, then everything computed from them.
 
-    The extract carries columns nothing reads - and some of them have numeric
-    or date headers - so writing it whole makes an unreadable file.
+    The extract carries columns no formula reads; writing it whole makes an
+    unreadable file.
     """
     cols = dimension_columns(df)
     if spec.ROWS_COLUMN in df.columns:
@@ -163,11 +163,6 @@ def audit_columns(df, *, report=None):
     if absent:
         notes.append("spec columns NOT in the file (read as zero): "
                      + ", ".join(absent))
-    odd = [c for c in unread if str(c).startswith("Unnamed")
-           or any(ch in str(c) for ch in "/:")]
-    if odd:
-        notes.append("unexpected column headers - check these are not a stray "
-                     "date or blank column: " + ", ".join(map(str, odd)))
     if unread:
         notes.append(f"{len(unread)} columns the formulas do not use "
                      f"(left out of the output)")

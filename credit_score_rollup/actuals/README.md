@@ -7,7 +7,7 @@ spec document defines.
 | --- | --- |
 | `pnl_spec.py` | the spec document transcribed: every P&L line and the CSV column it reads |
 | `build_pnl.py` | the two build stages, plus a CLI |
-| `test_build_pnl.py` | runs both stages against a CSV carrying the spec's exact column list |
+| `test_build_pnl.py` | runs every stage against a CSV shaped like the real extract |
 | `../04_actuals_pnl.ipynb` | the same code as a self-contained notebook |
 
 ```
@@ -16,16 +16,28 @@ python3 build_pnl.py vcr_actuals.csv --unit-co-denominator boards_net_unwind
 python3 test_build_pnl.py
 ```
 
+## What the extract looks like
+
+`VCRData` already arrives aggregated - `NewAccounts` runs 1, 5, 219, 139, and
+`ChargeOffIndicator` / `ActiveAccountIndicator` are counts of accounts. Three
+things about it are easy to get wrong:
+
+- `AccountNumber` holds text (*"First Account"*). It is a dimension, not an
+  account id, so it is grouped on rather than counted.
+- The score columns are **sums**: `ACE2Score` 190,594 sits beside
+  `ACE2ScoreIndicator` 207, an average of 920.7. They are summed like any other
+  measure and `Avg ACE2 Score` is derived from the pair.
+- `NewAccounts` is read at the cohort's **first MOB**, not summed across MOB,
+  so a repeated booking count cannot multiply the cohort.
+
+Dates come as `31-Jan-23` and `Jan-23`, parsed by explicit format.
+
 ## Stage 0 - sum to cohort level
 
-The extract is one row per **account** per month: it carries `AccountNumber`,
-and `ChargeOffIndicator` / `ActiveAccountIndicator` are 0/1 flags on a single
-account. `aggregate_to_cohort` sums the rows to one per cohort x MOB, which
-turns each flag into a count of accounts. Scores are averaged rather than
-summed; an extract already at cohort grain passes through unchanged.
-
-Skipping this is what makes the unit charge-off rate come out as 0% or 100% -
-the denominator is 1.
+`aggregate_to_cohort` sums to one row per cohort x MOB. That is a no-op at the
+grain the extract already has, and it collapses repeats if it is ever cut
+differently. `audit_columns` reports what the spec reads, what it wants but the
+file lacks, and what the file carries that nothing reads.
 
 ## Stage 1 - the monthly P&L
 

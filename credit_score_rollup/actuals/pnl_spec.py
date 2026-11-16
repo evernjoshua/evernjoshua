@@ -68,14 +68,22 @@ AMEX_INCENTIVE = dict(
 )
 
 # ------------------------------------------------------------- aggregation --
-# The extract is one row per ACCOUNT per month, so ChargeOffIndicator and
-# ActiveAccountIndicator are 0/1 flags on a single account. Everything below
-# works at cohort level, so the rows are summed to one per cohort x MOB first:
-# the flags become counts of accounts.
-ACCOUNT_KEY = "AccountNumber"
-ACCOUNTS_COLUMN = "Accounts"          # the account count the sum produces
-# Summed like every other measure would be wrong for these - they are averaged.
-AVERAGE_COLUMNS = ["ACE2Score", "ACE4Score", "Vantage3score"]
+# The extract already arrives aggregated: NewAccounts runs 1, 5, 219, 139, and
+# ChargeOffIndicator / ActiveAccountIndicator are COUNTS of accounts, not 0/1
+# flags. AccountNumber is a text dimension ("First Account"), not an account
+# id. The rows are still summed to one per cohort x MOB, which is a no-op when
+# the file is already at that grain and collapses any repeats when it is not.
+ROWS_COLUMN = "Source Rows"           # how many extract rows went into each
+
+# The score columns are SUMS of scores, and each has a matching *ScoreIndicator
+# holding the count of accounts scored - e.g. ACE2Score 190,594 over
+# ACE2ScoreIndicator 207 is an average of 920.7. So they are summed like every
+# other measure, and the averages are derived from the pair.
+SCORE_PAIRS = [
+    ("ACE2Score",     "ACE2ScoreIndicator",     "Avg ACE2 Score"),
+    ("ACE4Score",     "ACE4ScoreIndicator",     "Avg ACE4 Score"),
+    ("Vantage3score", "Vantage3ScoreIndicator", "Avg Vantage3 Score"),
+]
 
 # ------------------------------------------------------------------- rates --
 # Cumulative net charge-off before recoveries

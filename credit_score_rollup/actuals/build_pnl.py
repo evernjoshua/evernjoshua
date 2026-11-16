@@ -2,11 +2,11 @@
 
 Three stages:
 
-  aggregate_to_cohort  the extract is one row per account per month, so the
-                       rows are summed to one per cohort x MOB. The 0/1 flags
-                       (ChargeOffIndicator, ActiveAccountIndicator) become
-                       counts of accounts. Already-aggregated input passes
-                       through unchanged.
+  aggregate_to_cohort  sums the rows to one per cohort x MOB and derives the
+                       average scores from each score sum and its matching
+                       *ScoreIndicator count. The extract already arrives
+                       aggregated, so this is normally a no-op that only
+                       collapses repeats.
   add_pnl_lines(df)    the monthly P&L - revenues, provision, servicing and
                        other expenses, pretax income.
   add_cumulative(df)   the cumulative measures the heat map reads - cumulative
@@ -47,10 +47,12 @@ L_UNIT_DEN  = "Unit C/O Denominator"
 
 # Dimensions that identify a cohort. A cumulative measure runs across MOB
 # within one of these, so they must not include MonthsOnBooks.
+# The extract's dimension columns, in file order. AccountNumber belongs here:
+# it holds text like "First Account", not an account id.
 GRAIN_KEYS = [
-    "vintage", "VintageDate", "Branding", "Acquisitions", "Association",
-    "source", "Subchannel", "AnnualFeeGroup", "Fee", "OriginalCreditLine",
-    "VantageRange",
+    "vintage", "VintageDate", "AccountNumber", "Branding", "Acquisitions",
+    "Association", "source", "Subchannel", "AnnualFeeGroup", "Fee",
+    "OriginalCreditLine", "VantageRange",
 ]
 MOB_KEY = "MonthsOnBooks"
 
@@ -72,14 +74,56 @@ def grain_keys(df):
     return [k for k in GRAIN_KEYS if k in df.columns]
 
 
+def spec_columns():
+    """Every CSV column the spec actually reads."""
+    used = {spec.GROSS_REVENUE, spec.PROVISION, spec.RECEIVABLE_COLUMN,
+            spec.BOARDS_COLUMN, spec.UNWIND_COLUMN, spec.CHARGE_OFF_UNITS,
+            spec.CHARGE_OFF_PRIN, spec.ACTIVE_COLUMN, MOB_KEY}
+    used.update(c for _l, c, _s in spec.REVENUE_LINES)
+    used.update(c for _l, c in spec.SERVICING_EXPENSE_LINES)
+    used.update(c for _l, c in spec.OTHER_EXPENSE_LINES)
+    used.update(spec.FRAUD_LOSS_PARTS)
+    for total, counter, _label in spec.SCORE_PAIRS:
+        used.update((total, counter))
+    if spec.CPA_COLUMN:
+        used.add(spec.CPA_COLUMN)
+    return used
+
+
+def audit_columns(df, *, report=None):
+    """Say which columns the spec reads, which it wants but the file lacks,
+    and which the file carries that nothing reads."""
+    notes = report if report is not None else []
+    used = spec_columns()
+    keys = grain_keys(df)
+    present = [c for c in used if c in df.columns]
+    absent = sorted(c for c in used if c not in df.columns)
+    unread = [c for c in df.columns if c not in used and c not in keys]
+
+    notes.append(f"dimensions: {', '.join(keys)}")
+    notes.append(f"spec reads {len(present)} of its {len(used)} columns")
+    if absent:
+        notes.append("spec columns NOT in the file (read as zero): "
+                     + ", ".join(absent))
+    odd = [c for c in unread if str(c).startswith("Unnamed")
+           or any(ch in str(c) for ch in "/:")]
+    if odd:
+        notes.append("unexpected column headers - check these are not a stray "
+                     "date or blank column: " + ", ".join(map(str, odd)))
+    if unread:
+        notes.append(f"{len(unread)} columns carried through but not read by "
+                     f"the spec (summed, kept in the output)")
+    return dict(present=present, absent=absent, unread=unread)
+
+
 # ------------------------------------------------------------- stage zero ----
 def aggregate_to_cohort(df, *, report=None):
     """Sum the account-month rows to one row per cohort x MOB.
 
-    The extract carries one row per account, so ChargeOffIndicator and
-    ActiveAccountIndicator are 0/1 flags. Summing them turns each into a count
-    of accounts, which is what every rate below divides by. Input that is
-    already at cohort grain has one row per group and passes through unchanged.
+    ChargeOffIndicator and ActiveAccountIndicator already arrive as counts of
+    accounts, which is what the rates below divide by. The score columns are
+    sums, so they are summed too and the averages derived from each one's
+    *ScoreIndicator count. Input already at cohort grain passes through.
     """
     notes = report if report is not None else []
     keys = grain_keys(df)
@@ -90,27 +134,20 @@ def aggregate_to_cohort(df, *, report=None):
         raise SpecGap(f"{MOB_KEY} is not in the CSV")
 
     group_keys = keys + [MOB_KEY]
-    account_key = spec.ACCOUNT_KEY if spec.ACCOUNT_KEY in df.columns else None
-
     measures = [c for c in df.columns
-                if c not in group_keys and c != account_key
-                and pd.api.types.is_numeric_dtype(df[c])]
-    averaged = [c for c in spec.AVERAGE_COLUMNS if c in measures]
-    summed = [c for c in measures if c not in averaged]
+                if c not in group_keys and pd.api.types.is_numeric_dtype(df[c])]
     dropped = [c for c in df.columns
-               if c not in group_keys and c != account_key and c not in measures]
+               if c not in group_keys and c not in measures]
 
-    how = {c: "sum" for c in summed}
-    how.update({c: "mean" for c in averaged})
     g = df.groupby(group_keys, dropna=False, observed=True)
-    out = g.agg(how)
-
-    # how many accounts went into each cohort-month
-    if account_key is not None:
-        out[spec.ACCOUNTS_COLUMN] = g[account_key].nunique()
-    else:
-        out[spec.ACCOUNTS_COLUMN] = g.size()
+    out = g.agg({c: "sum" for c in measures})
+    out[spec.ROWS_COLUMN] = g.size()
     out = out.reset_index()
+
+    # average score = the score sum over the count of accounts scored
+    for total, counter, label in spec.SCORE_PAIRS:
+        if total in out.columns and counter in out.columns:
+            out[label] = _div(out[total], out[counter])
 
     if len(out) == len(df):
         notes.append(f"already one row per cohort x MOB ({len(df):,} rows); "
@@ -119,8 +156,10 @@ def aggregate_to_cohort(df, *, report=None):
         per = len(df) / len(out)
         notes.append(f"summed {len(df):,} account-month rows to {len(out):,} "
                      f"cohort-month rows ({per:,.1f} accounts per cohort-month)")
-    if averaged:
-        notes.append("averaged rather than summed: " + ", ".join(averaged))
+    derived = [l for t, c, l in spec.SCORE_PAIRS if l in out.columns]
+    if derived:
+        notes.append("average scores derived from each score sum over its "
+                     "*ScoreIndicator count: " + ", ".join(derived))
     if dropped:
         notes.append("non-numeric columns dropped by the sum: "
                      + ", ".join(dropped))
@@ -244,12 +283,26 @@ def _amex_line(out, share, missing):
         f"{cfg['max_mob']}.")
 
 
+# The extract writes dates as "31-Jan-23" and vintages as "Jan-23".
+DATE_FORMATS = ("%d-%b-%y", "%d-%b-%Y", "%b-%y", "%b-%Y",
+                "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y")
+
+
 def _vintage_month(df):
     for name in ("VintageDate", "vintage"):
-        if name in df.columns:
-            parsed = pd.to_datetime(df[name], errors="coerce")
+        if name not in df.columns:
+            continue
+        col = df[name]
+        if pd.api.types.is_datetime64_any_dtype(col):
+            return col.dt.to_period("M")
+        text = col.astype("string").str.strip()
+        for fmt in DATE_FORMATS:
+            parsed = pd.to_datetime(text, format=fmt, errors="coerce")
             if parsed.notna().any():
                 return parsed.dt.to_period("M")
+        parsed = pd.to_datetime(text, errors="coerce", format="mixed")
+        if parsed.notna().any():
+            return parsed.dt.to_period("M")
     return pd.Series(pd.NaT, index=df.index).dt.to_period("M")
 
 
@@ -308,15 +361,7 @@ def add_cumulative(df, *, unit_co_denominator=None, report=None):
 
 def _unit_denominator(out, keys, mode, missing, notes):
     """Booked accounts less unwinds through MOB 4, or active accounts."""
-    boards_m = _col(out, spec.BOARDS_COLUMN, missing=missing)
-    if boards_m.sum() == 0 and spec.ACCOUNTS_COLUMN in out.columns:
-        # no NewAccounts to sum; fall back to the most accounts ever seen
-        notes.append(f"{spec.BOARDS_COLUMN} is empty, so booked accounts come "
-                     f"from the peak {spec.ACCOUNTS_COLUMN} per cohort.")
-        boards = out.groupby([out[k] for k in keys])[spec.ACCOUNTS_COLUMN] \
-                    .transform("max").astype(float)
-    else:
-        boards = boards_m.groupby([out[k] for k in keys]).transform("sum")
+    boards = _cohort_boards(out, keys, missing, notes)
     if mode == "active":
         active = _col(out, spec.ACTIVE_COLUMN, missing=missing)
         notes.append(f"Unit C/O rate = cumulative {spec.CHARGE_OFF_UNITS} / "
@@ -339,6 +384,33 @@ def _unit_denominator(out, keys, mode, missing, notes):
     notes.append(f"Unit C/O rate over booked accounts less unwinds through MOB "
                  f"{spec.UNWIND_THROUGH_MOB}.")
     return boards, boards - unwinds
+
+
+def _cohort_boards(out, keys, missing, notes):
+    """Booked accounts: NewAccounts as at the cohort's earliest MOB.
+
+    Summing NewAccounts across MOB would multiply the cohort if the extract
+    repeats the booking count on every month, so it is read at the first MOB
+    and the other months are checked rather than added.
+    """
+    boards_m = _col(out, spec.BOARDS_COLUMN, missing=missing)
+    mob = _col(out, MOB_KEY, missing=missing)
+    grouper = [out[k] for k in keys]
+    first_mob = mob.groupby(grouper).transform("min")
+    at_first = boards_m.where(mob == first_mob, 0.0)
+    boards = at_first.groupby(grouper).transform("sum")
+
+    later = boards_m.where(mob > first_mob, 0.0)
+    if (later != 0).any():
+        n = int((later != 0).sum())
+        notes.append(f"NOTE - {spec.BOARDS_COLUMN} is non-zero after the first "
+                     f"MOB on {n:,} rows, so booked accounts are read at the "
+                     f"first MOB rather than summed across MOB.")
+    if (boards == 0).any():
+        n = int((boards == 0).sum())
+        notes.append(f"WARNING - {spec.BOARDS_COLUMN} is zero at the first MOB "
+                     f"for {n:,} rows, so those cohorts have no booked count.")
+    return boards
 
 
 def _div(num, den):
@@ -381,6 +453,7 @@ def build(csv_path, *, cpa=None, amex_share=None,
     notes = report if report is not None else []
     df = pd.read_csv(csv_path, low_memory=False)
     notes.append(f"{len(df):,} rows, {len(df.columns)} columns read from {csv_path}")
+    audit_columns(df, report=notes)
     df = aggregate_to_cohort(df, report=notes)
     df = add_pnl_lines(df, cpa=cpa, amex_share=amex_share, report=notes)
     df = add_cumulative(df, unit_co_denominator=unit_co_denominator, report=notes)

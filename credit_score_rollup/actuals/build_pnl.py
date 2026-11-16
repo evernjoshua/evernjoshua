@@ -21,6 +21,8 @@ and they stay at zero, and are reported, until you give them a source.
 
 from __future__ import annotations
 
+import csv
+
 import pandas as pd
 
 import pnl_spec as spec
@@ -55,6 +57,7 @@ GRAIN_KEYS = [
     "OriginalCreditLine", "VantageRange",
 ]
 MOB_KEY = "MonthsOnBooks"
+DIMENSIONS = set(GRAIN_KEYS) | {MOB_KEY}
 
 
 class SpecGap(Exception):
@@ -70,8 +73,19 @@ def _col(df, name, *, missing):
 
 
 def grain_keys(df):
-    """The cohort keys actually present in this CSV, in spec order."""
-    return [k for k in GRAIN_KEYS if k in df.columns]
+    """The cohort keys present in this CSV, in the order the file has them.
+
+    Source order, not the order of GRAIN_KEYS: the output's dimension block
+    then reads the same way as the extract, with MonthsOnBooks where the
+    extract puts it rather than shuffled to the end.
+    """
+    wanted = set(GRAIN_KEYS)
+    return [c for c in df.columns if c in wanted]
+
+
+def dimension_columns(df):
+    """Every dimension, MonthsOnBooks included, in the extract's own order."""
+    return [c for c in df.columns if c in DIMENSIONS]
 
 
 def spec_columns():
@@ -118,9 +132,7 @@ def select_output(df, *, keep_inputs=True):
     The extract carries columns nothing reads - and some of them have numeric
     or date headers - so writing it whole makes an unreadable file.
     """
-    cols = [c for c in GRAIN_KEYS if c in df.columns]
-    if MOB_KEY in df.columns:
-        cols.append(MOB_KEY)
+    cols = dimension_columns(df)
     if spec.ROWS_COLUMN in df.columns:
         cols.append(spec.ROWS_COLUMN)
     if keep_inputs:
@@ -179,7 +191,7 @@ def aggregate_to_cohort(df, *, only_spec=True, report=None):
     if MOB_KEY not in df.columns:
         raise SpecGap(f"{MOB_KEY} is not in the CSV")
 
-    group_keys = keys + [MOB_KEY]
+    group_keys = dimension_columns(df)
     numeric = [c for c in df.columns
                if c not in group_keys and pd.api.types.is_numeric_dtype(df[c])]
     if only_spec:
@@ -499,6 +511,43 @@ CUMULATIVE_COLUMNS = [L_CUM_PTI, L_AVG_REC, L_CUM_NCO, L_CUM_ROA,
                       L_BOARDS, "Cumul. Charge-Off Accounts",
                       L_UNIT_DEN, L_CUM_UNIT]
 CUM_UNIT_NUMERATOR = "Cumul. Charge-Off Accounts"
+
+
+def write_output(df, path, *, report=None):
+    """Write the result and read it straight back to prove it lines up.
+
+    A header with fewer fields than its data rows is the one failure that
+    silently shifts every column, so it is checked rather than assumed.
+    """
+    notes = report if report is not None else []
+    if str(path).lower().endswith((".xlsx", ".xlsm")):
+        df.to_excel(path, index=False)
+        back = pd.read_excel(path)
+    else:
+        # quote every text field so a comma or a "<=600" cannot split a row
+        df.to_csv(path, index=False, quoting=csv.QUOTE_NONNUMERIC)
+        back = pd.read_csv(path, low_memory=False)
+
+    if len(back.columns) != len(df.columns):
+        raise SpecGap(f"{path}: wrote {len(df.columns)} columns but read back "
+                      f"{len(back.columns)}")
+    mismatched = [(a, b) for a, b in zip(df.columns, back.columns) if a != b]
+    if mismatched:
+        raise SpecGap(f"{path}: header does not match: {mismatched[:5]}")
+    if len(back) != len(df):
+        raise SpecGap(f"{path}: wrote {len(df):,} rows, read back {len(back):,}")
+    notes.append(f"wrote {path}: {len(df):,} rows x {len(df.columns)} columns, "
+                 f"read back with every header in place")
+    return back
+
+
+def header_map(df, row=0):
+    """Each column beside its value on one row - the quick way to see whether
+    a header has slipped against its data."""
+    r = df.iloc[row]
+    return pd.DataFrame({"#": range(1, len(df.columns) + 1),
+                         "column": list(df.columns),
+                         "value": [r[c] for c in df.columns]})
 
 
 def build(csv_path, *, cpa=None, amex_share=None, unit_co_denominator=None,

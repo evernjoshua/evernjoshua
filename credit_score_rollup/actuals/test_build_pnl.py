@@ -33,7 +33,7 @@ CurrentAccountLateFee Attrition RetainedFlag FeeAnnualDueMonthlyAmount
 FeeAnnualMembershipAmount FeeDuplicateStatementAmount FeeFedExAmount
 FeeFinanceChargeAmount FeeLateAmount FeeReplacementAmount
 FeeReplacementManualAmount FeeSalesSlipAmount FeeOverlimitAdjustmentAmount
-MiscFeeamount RecoveryExpense GrossRevenue FraudAmount RequiredReserves
+MiscFeeamount RecoveryExpense 2-Apr GrossRevenue FraudAmount RequiredReserves
 CostofFundsExpense CashInflow CashOutflow NetCashFlow fpdcount fpdeval
 VantageRange""".split()
 
@@ -125,6 +125,11 @@ def main():
 
     keys = bp.grain_keys(agg)
     assert "AccountNumber" in keys, "AccountNumber is a dimension"
+    # dimensions keep the order the extract has them in, MonthsOnBooks third
+    extract_order = [c for c in COLUMNS if c in bp.DIMENSIONS]
+    assert bp.dimension_columns(agg) == extract_order, bp.dimension_columns(agg)
+    assert extract_order[:4] == ["vintage", "VintageDate", "MonthsOnBooks",
+                                 "AccountNumber"], extract_order[:4]
     assert len(agg) == len(raw), "already at cohort grain, nothing to collapse"
     print(f"fixture: {len(raw)} rows x {len(COLUMNS)} spec columns "
           f"-> {len(df.columns)} columns\n")
@@ -199,7 +204,6 @@ def main():
     # headers; none of them may reach the output
     import tempfile, os
     noisy = raw.copy()
-    noisy["4/2/2026"] = 1.0            # a date where a column name should be
     noisy["Unnamed: 97"] = 2.0         # a blank header
     noisy["SomeOtherMeasure"] = 3.0
     tmp = os.path.join(tempfile.mkdtemp(), "noisy.csv")
@@ -211,7 +215,7 @@ def main():
     for line in log3:
         print("  -", line)
 
-    junk = {"4/2/2026", "Unnamed: 97", "SomeOtherMeasure"}
+    junk = {"2-Apr", "Unnamed: 97", "SomeOtherMeasure"}
     assert not (junk & set(out.columns)), junk & set(out.columns)
     # every output column is named, and no name is a bare number or a date
     for c in out.columns:
@@ -233,6 +237,32 @@ def main():
     assert "GrossRevenue" not in slim.columns
     assert "Pretax Income" in slim.columns
     print(f"  derived-only: {len(slim.columns)} columns")
+
+    # ---- the written file must read back with every header in place ------
+    out_path = os.path.join(os.path.dirname(tmp), "out.csv")
+    log4 = []
+    back = bp.write_output(out, out_path, report=log4)
+    print()
+    for line in log4:
+        print("  -", line)
+    assert list(back.columns) == list(out.columns)
+    # every header field present on the data rows too
+    with open(out_path) as fh:
+        head = next(fh).rstrip("\n")
+        first = next(fh).rstrip("\n")
+    import csv as _csv
+    n_head = len(next(_csv.reader([head])))
+    n_row = len(next(_csv.reader([first])))
+    assert n_head == n_row == len(out.columns), (n_head, n_row, len(out.columns))
+    print(f"  header {n_head} fields, first data row {n_row} fields")
+
+    print("\nfirst row, each column beside its value")
+    hm = bp.header_map(out)
+    for _i, r in hm.head(16).iterrows():
+        v = r["value"]
+        v = f"{v:,.4f}" if isinstance(v, float) else str(v)
+        print(f"  {r['#']:>3}  {r['column']:<34} {v}")
+    print(f"  ... {len(hm) - 16} more")
 
     print("\nall assertions passed")
 

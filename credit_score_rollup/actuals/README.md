@@ -41,11 +41,23 @@ file lacks, and what the file carries that nothing reads.
 
 ## What gets written
 
-Only the columns the solution needs, in this order: the dimensions, then the
-source columns the formulas read, then everything computed from them. The
-extract carries ~59 columns no formula touches, some with numeric or date
-headers, and writing them whole makes the header row unreadable in Excel.
+Only the columns the solution needs, in this order:
+
+1. the dimensions, **in the order the extract has them** - `vintage`,
+   `VintageDate`, `MonthsOnBooks`, `AccountNumber`, ... - so the block reads
+   the same way as the source file
+2. the source columns the formulas read
+3. everything computed from them
+
+The extract carries ~59 columns no formula touches, one of which Excel renders
+as the date `2-Apr`; writing them whole makes the header row unreadable.
 `--derived-only` (or `keep_inputs=False`) drops the source columns too.
+
+`write_output` reads the file back after writing and raises if the header has
+slipped against the data, and quotes text so a comma or a `<=600` cannot split
+a row. Give it an `.xlsx` name and it writes a workbook instead. `header_map`
+prints every column beside its value on one row, which is the quick way to see
+a slipped header.
 
 ## Stage 1 - the monthly P&L
 

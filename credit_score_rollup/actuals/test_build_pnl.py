@@ -5,6 +5,7 @@ AccountNumber a text dimension, ChargeOffIndicator and ActiveAccountIndicator
 as counts of accounts, score columns as sums with a matching *ScoreIndicator
 count, and fees carrying a dollar sign.
 """
+import re
 import numpy as np, pandas as pd, build_pnl as bp, pnl_spec as spec
 
 # The column list from the spec document's last page, verbatim and in order.
@@ -192,6 +193,46 @@ def main():
               f"  (denom {a[bp.L_UNIT_DEN]:>5,.0f})"
               f"   vs boards less unwinds {b[bp.L_CUM_UNIT]:>7.2%}"
               f"  (denom {b[bp.L_UNIT_DEN]:>5,.0f})")
+
+    # ---- the output carries only what the solution needs -----------------
+    # the real extract has columns nothing reads, some with numeric or date
+    # headers; none of them may reach the output
+    import tempfile, os
+    noisy = raw.copy()
+    noisy["4/2/2026"] = 1.0            # a date where a column name should be
+    noisy["Unnamed: 97"] = 2.0         # a blank header
+    noisy["SomeOtherMeasure"] = 3.0
+    tmp = os.path.join(tempfile.mkdtemp(), "noisy.csv")
+    noisy.to_csv(tmp, index=False)
+
+    log3 = []
+    out = bp.build(tmp, report=log3)
+    print("\nbuild() from a CSV with junk columns")
+    for line in log3:
+        print("  -", line)
+
+    junk = {"4/2/2026", "Unnamed: 97", "SomeOtherMeasure"}
+    assert not (junk & set(out.columns)), junk & set(out.columns)
+    # every output column is named, and no name is a bare number or a date
+    for c in out.columns:
+        assert isinstance(c, str) and c.strip(), repr(c)
+        assert not c.replace(".", "").replace("-", "").isdigit(), c
+        # not a date sitting where a column name should be
+        assert not re.fullmatch(r"[\d/.\-]+", c), c
+    # nothing the extract carries but the formulas never read survives
+    unread = set(raw.columns) - bp.spec_columns() - set(bp.GRAIN_KEYS)
+    assert not (unread & set(out.columns)), sorted(unread & set(out.columns))
+    # and everything the formulas produce does
+    for c in bp.PNL_COLUMNS + bp.CUMULATIVE_COLUMNS:
+        assert c in out.columns, c
+    print(f"\n  {len(noisy.columns)} columns in -> {len(out.columns)} out")
+    print("  " + ", ".join(list(out.columns)[:14]) + ", ...")
+
+    slim = bp.build(tmp, keep_inputs=False)
+    assert len(slim.columns) < len(out.columns)
+    assert "GrossRevenue" not in slim.columns
+    assert "Pretax Income" in slim.columns
+    print(f"  derived-only: {len(slim.columns)} columns")
 
     print("\nall assertions passed")
 

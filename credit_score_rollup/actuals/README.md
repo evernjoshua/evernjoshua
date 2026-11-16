@@ -39,6 +39,14 @@ grain the extract already has, and it collapses repeats if it is ever cut
 differently. `audit_columns` reports what the spec reads, what it wants but the
 file lacks, and what the file carries that nothing reads.
 
+## What gets written
+
+Only the columns the solution needs, in this order: the dimensions, then the
+source columns the formulas read, then everything computed from them. The
+extract carries ~59 columns no formula touches, some with numeric or date
+headers, and writing them whole makes the header row unreadable in Excel.
+`--derived-only` (or `keep_inputs=False`) drops the source columns too.
+
 ## Stage 1 - the monthly P&L
 
 The thirteen revenue lines, then `Miscellaneous Fees/Income` as

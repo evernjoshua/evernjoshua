@@ -90,6 +90,52 @@ def spec_columns():
     return used
 
 
+def spec_input_order():
+    """The spec's source columns, ordered for reading."""
+    order = [spec.BOARDS_COLUMN, spec.ACTIVE_COLUMN, spec.CHARGE_OFF_UNITS,
+             spec.UNWIND_COLUMN, spec.RECEIVABLE_COLUMN, spec.CHARGE_OFF_PRIN,
+             spec.GROSS_REVENUE, spec.PROVISION]
+    order += [c for _l, c, _s in spec.REVENUE_LINES]
+    order += [c for _l, c in spec.SERVICING_EXPENSE_LINES]
+    order += [c for _l, c in spec.OTHER_EXPENSE_LINES]
+    order += list(spec.FRAUD_LOSS_PARTS)
+    for total, counter, _label in spec.SCORE_PAIRS:
+        order += [total, counter]
+    if spec.CPA_COLUMN:
+        order.append(spec.CPA_COLUMN)
+    seen, out = set(), []
+    for c in order:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def select_output(df, *, keep_inputs=True):
+    """Just the columns the solution needs, in order: the dimensions, then the
+    source columns the formulas read, then everything computed from them.
+
+    The extract carries columns nothing reads - and some of them have numeric
+    or date headers - so writing it whole makes an unreadable file.
+    """
+    cols = [c for c in GRAIN_KEYS if c in df.columns]
+    if MOB_KEY in df.columns:
+        cols.append(MOB_KEY)
+    if spec.ROWS_COLUMN in df.columns:
+        cols.append(spec.ROWS_COLUMN)
+    if keep_inputs:
+        cols += [c for c in spec_input_order() if c in df.columns]
+    cols += [l for _t, _c, l in spec.SCORE_PAIRS if l in df.columns]
+    cols += [c for c in PNL_COLUMNS if c in df.columns]
+    cols += [c for c in CUMULATIVE_COLUMNS if c in df.columns]
+    seen, out = set(), []
+    for c in cols:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return df[out]
+
+
 def audit_columns(df, *, report=None):
     """Say which columns the spec reads, which it wants but the file lacks,
     and which the file carries that nothing reads."""
@@ -111,13 +157,13 @@ def audit_columns(df, *, report=None):
         notes.append("unexpected column headers - check these are not a stray "
                      "date or blank column: " + ", ".join(map(str, odd)))
     if unread:
-        notes.append(f"{len(unread)} columns carried through but not read by "
-                     f"the spec (summed, kept in the output)")
+        notes.append(f"{len(unread)} columns the formulas do not use "
+                     f"(left out of the output)")
     return dict(present=present, absent=absent, unread=unread)
 
 
 # ------------------------------------------------------------- stage zero ----
-def aggregate_to_cohort(df, *, report=None):
+def aggregate_to_cohort(df, *, only_spec=True, report=None):
     """Sum the account-month rows to one row per cohort x MOB.
 
     ChargeOffIndicator and ActiveAccountIndicator already arrive as counts of
@@ -134,10 +180,16 @@ def aggregate_to_cohort(df, *, report=None):
         raise SpecGap(f"{MOB_KEY} is not in the CSV")
 
     group_keys = keys + [MOB_KEY]
-    measures = [c for c in df.columns
-                if c not in group_keys and pd.api.types.is_numeric_dtype(df[c])]
+    numeric = [c for c in df.columns
+               if c not in group_keys and pd.api.types.is_numeric_dtype(df[c])]
+    if only_spec:
+        used = spec_columns()
+        measures = [c for c in numeric if c in used]
+        ignored = [c for c in numeric if c not in used]
+    else:
+        measures, ignored = numeric, []
     dropped = [c for c in df.columns
-               if c not in group_keys and c not in measures]
+               if c not in group_keys and c not in numeric]
 
     g = df.groupby(group_keys, dropna=False, observed=True)
     out = g.agg({c: "sum" for c in measures})
@@ -156,6 +208,8 @@ def aggregate_to_cohort(df, *, report=None):
         per = len(df) / len(out)
         notes.append(f"summed {len(df):,} account-month rows to {len(out):,} "
                      f"cohort-month rows ({per:,.1f} accounts per cohort-month)")
+    if ignored:
+        notes.append(f"ignored {len(ignored)} columns the formulas do not use")
     derived = [l for t, c, l in spec.SCORE_PAIRS if l in out.columns]
     if derived:
         notes.append("average scores derived from each score sum over its "
@@ -447,8 +501,8 @@ CUMULATIVE_COLUMNS = [L_CUM_PTI, L_AVG_REC, L_CUM_NCO, L_CUM_ROA,
 CUM_UNIT_NUMERATOR = "Cumul. Charge-Off Accounts"
 
 
-def build(csv_path, *, cpa=None, amex_share=None,
-          unit_co_denominator=None, report=None):
+def build(csv_path, *, cpa=None, amex_share=None, unit_co_denominator=None,
+          keep_inputs=True, report=None):
     """Read the VCR CSV and add every column above."""
     notes = report if report is not None else []
     df = pd.read_csv(csv_path, low_memory=False)
@@ -460,6 +514,10 @@ def build(csv_path, *, cpa=None, amex_share=None,
     _checks, bad = reconcile(df)
     for name, worst in bad.items():
         notes.append(f"CHECK FAILED - {name}: worst break {worst:,.2f}")
+    wide = len(df.columns)
+    df = select_output(df, keep_inputs=keep_inputs)
+    notes.append(f"output: {len(df.columns)} columns the solution needs "
+                 f"(of {wide} after the build)")
     return df
 
 
@@ -471,6 +529,9 @@ if __name__ == "__main__":
     ap.add_argument("-o", "--out", default="vcr_with_pnl.csv")
     ap.add_argument("--cpa", default=None)
     ap.add_argument("--amex-share", type=float, default=None)
+    ap.add_argument("--derived-only", action="store_true",
+                    help="write only the dimensions and the computed columns, "
+                         "leaving out the source columns they read")
     ap.add_argument("--unit-co-denominator", default=None,
                     choices=["boards_net_unwind", "active"])
     a = ap.parse_args()
@@ -482,7 +543,8 @@ if __name__ == "__main__":
             pass
     log = []
     frame = build(a.csv, cpa=cpa, amex_share=a.amex_share,
-                  unit_co_denominator=a.unit_co_denominator, report=log)
+                  unit_co_denominator=a.unit_co_denominator,
+                  keep_inputs=not a.derived_only, report=log)
     frame.to_csv(a.out, index=False)
     for line in log:
         print(" -", line)

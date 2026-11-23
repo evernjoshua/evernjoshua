@@ -2,26 +2,31 @@
 import numpy as np, pandas as pd, read_actuals as ra
 
 # Headers spelled the way a hand-built export tends to spell them.
-HEADERS = ["Vintage", "Vintage Date", "Account", "Account Number",
+HEADERS = ["Campaign", "Vintage", "Vintage Date", "Account", "Account Number",
            "Subchannel", "Application Credit Score", "Vantage Range",
            "Annual Fee Group", "Annual Fee", "Original Credit Line",
            "Month on Book", "New Accounts", "Net Unit Charge Off",
-           "Unwinds Count", "Net Dollar", "CF Pretax minus Cost of Funds"]
+           "Unwinds Count", "Net Dollar", "Ending Receivable",
+           "CF Pretax minus Cost of Funds"]
 
 
 def fixture(seed=3):
     rng = np.random.default_rng(seed)
     rows = []
-    for vintage, vdate in [("Jan-23", "31-Jan-23"), ("Aug-24", "31-Aug-24")]:
+    for campaign in ("Credit Karma", "Experian"):
+      for vintage, vdate in [("Jan-23", "31-Jan-23"), ("Aug-24", "31-Aug-24")]:
         for band in ("<=600", "601-639", "640+"):
             for fee in ("$75", "$99"):
                 for line in (300, 500):
                     boards = int(rng.integers(80, 400))
                     unwinds = int(rng.integers(0, 12))
-                    for mob in (1, 6, 12, 24, 36, 48):
+                    for mob in range(1, 49):
                         live = max(boards - unwinds, 1)
                         co = int(live * 0.004 * mob)
                         rows.append({
+                            "Campaign": campaign,
+                            "Ending Receivable":
+                                live * 420.0 * (1 - 0.008 * mob),
                             "Vintage": vintage, "Vintage Date": vdate,
                             "Account": "First Account",
                             "Account Number": None,
@@ -52,6 +57,8 @@ def main():
     assert not [c for c in ra.ALIASES if c not in df.columns], \
         [c for c in ra.ALIASES if c not in df.columns]
 
+    assert "Campaign" in df.columns and "Receivables" in df.columns
+    df = ra.add_avg_receivables(df, report=log)
     df = ra.keep_year_mobs(df, report=log)
     assert set(df["MOB"]) == {12, 24, 36}
     assert set(df[ra.YEAR]) == {"Yr 1", "Yr 2", "Yr 3"}
@@ -70,27 +77,44 @@ def main():
     assert np.isclose(r[ra.UNIT_RATE],
                       r["NetUnitChargeOff"] / r[ra.UNIT_DEN])
     assert (df[ra.UNIT_RATE] > 0).all()
-    # the two undetermined rates stay blank rather than guessing
-    assert df[ra.DOLLAR_RATE].isna().all()
-    assert df[ra.ROA].isna().all()
+    # the dollar rate and the ROA are over average gross receivables
+    assert np.isclose(r[ra.DOLLAR_RATE], r["NetDollar"] / r[ra.AVG_REC])
+    assert np.isclose(r[ra.ROA],
+                      r["PretaxLessCoF"] / r[ra.AVG_REC] / r["MOB"] * 12)
+    assert df[ra.DOLLAR_RATE].notna().all() and df[ra.ROA].notna().all()
 
-    print("\nunit charge-off rate by year, $75 / 601-639 / line 300")
-    sl = df[(df.AnnualFee == "$75") & (df.VantageRange == "601-639")
-            & (df.OriginalCreditLine == 300) & (df.Vintage == "Jan-23")]
+    # the average is taken across every month, so it is not the MOB 12 balance
+    raw2 = ra.resolve_columns(fixture(), report=[])
+    cohort = ((raw2.Campaign == "Credit Karma") & (raw2.Vintage == "Jan-23")
+              & (raw2.VantageRange == "601-639") & (raw2.AnnualFee == "$75")
+              & (raw2.OriginalCreditLine == 300))
+    months = raw2[cohort].sort_values("MOB")
+    want = months[months.MOB <= 12]["Receivables"].mean()
+    got_all = ra.add_avg_receivables(raw2, report=[])
+    mask = ((got_all.Campaign == "Credit Karma") & (got_all.Vintage == "Jan-23")
+            & (got_all.VantageRange == "601-639")
+            & (got_all.AnnualFee == "$75")
+            & (got_all.OriginalCreditLine == 300) & (got_all.MOB == 12))
+    got = got_all[mask][ra.AVG_REC].iloc[0]
+    assert np.isclose(got, want), (got, want)
+    assert not np.isclose(got, months[months.MOB == 12]["Receivables"].iloc[0])
+    print(f"\n  avg receivables at MOB 12 = mean of months 1-12 "
+          f"({want:,.0f}), not the month-12 balance "
+          f"({months[months.MOB == 12]['Receivables'].iloc[0]:,.0f})")
+
+    print("\nCredit Karma / Jan-23 / $75 / 601-639 / line 300")
+    sl = df[(df.Campaign == "Credit Karma") & (df.AnnualFee == "$75")
+            & (df.VantageRange == "601-639") & (df.OriginalCreditLine == 300)
+            & (df.Vintage == "Jan-23")]
     for _i, r in sl.sort_values("MOB").iterrows():
-        print(f"  {r[ra.YEAR]} (MOB {r['MOB']:>2})  "
-              f"{r['NetUnitChargeOff']:>5,.0f} / {r[ra.UNIT_DEN]:>5,.0f}"
-              f" = {r[ra.UNIT_RATE]:>7.2%}   boards {r[ra.BOARDS]:>5,.0f}")
+        print(f"  {r[ra.YEAR]} (MOB {r['MOB']:>2})  boards {r[ra.BOARDS]:>4,.0f}"
+              f"   unit C/O {r[ra.UNIT_RATE]:>7.2%}"
+              f"   $ C/O {r[ra.DOLLAR_RATE]:>7.2%}"
+              f"   ROA {r[ra.ROA]:>8.2%}")
 
-    # a denominator, once named, is used
-    with_den = ra.add_rates(df, dollar_denominator="NewAccounts",
-                            roa_denominator=lambda d: d["NewAccounts"] * 400)
-    assert with_den[ra.DOLLAR_RATE].notna().all()
-    assert np.isclose(with_den[ra.ROA].iloc[0],
-                      df["PretaxLessCoF"].iloc[0] / (df["NewAccounts"].iloc[0] * 400))
-    print("\ndenominators, once named, are applied:"
-          f"  $ C/O {with_den[ra.DOLLAR_RATE].iloc[0]:,.2f} per account,"
-          f"  ROA {with_den[ra.ROA].iloc[0]:.2%}")
+    # a file that already carries the average is taken at face value
+    pre = ra.add_avg_receivables(raw2, already_average=True, report=[])
+    assert (pre[ra.AVG_REC] == pd.to_numeric(pre["Receivables"])).all()
 
     print("\nall assertions passed")
 

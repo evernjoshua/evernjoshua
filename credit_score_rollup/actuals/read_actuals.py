@@ -32,6 +32,10 @@ import pandas as pd
 # spaces, underscores and punctuation, so "Net Unit Charge Off",
 # "net_unit_chargeoff" and "NetUnitChargeOff" all land on the same column.
 ALIASES = {
+    # Name the campaign column here if the file spells it differently - this
+    # is what matches a row to a workbook tab.
+    "Campaign":       ["campaign", "brand", "branding", "source", "partner",
+                       "acquisition source", "marketing source"],
     "Vintage":        ["vintage"],
     "VintageDate":    ["vintage date", "vintagedate"],
     "Subchannel":     ["subchannel", "sub channel"],
@@ -51,6 +55,12 @@ ALIASES = {
                        "unwinds", "unwind"],
     "NetDollar":      ["net dollar", "netdollar", "net dollar charge off",
                        "net dollars"],
+    # The denominator of both the dollar charge-off rate and the ROA.
+    "Receivables":    ["average gross receivables", "avg gross receivables",
+                       "avg receivables", "average receivables",
+                       "gross receivables", "ending receivable",
+                       "endingreceivable", "receivables", "balance",
+                       "ending balance"],
     "PretaxLessCoF":  ["cf pretax minus cost of funds",
                        "cf pretax less cost of funds",
                        "cfpretaxminuscostoffunds", "cf pretax - cost of funds",
@@ -65,10 +75,11 @@ IGNORE = ["account", "account number", "accountnumber", "annual fee group",
 MOB_YEARS = {12: "Yr 1", 24: "Yr 2", 36: "Yr 3"}
 
 # The cohort. Anything not here and not a measure is carried but not grouped on.
-DIMENSIONS = ["Vintage", "VintageDate", "Subchannel", "VantageRange",
-              "AnnualFee", "OriginalCreditLine"]
+DIMENSIONS = ["Campaign", "Vintage", "VintageDate", "Subchannel",
+              "VantageRange", "AnnualFee", "OriginalCreditLine"]
+AVG_REC = "Avg Gross Receivables"
 MEASURES = ["NewAccounts", "NetUnitChargeOff", "UnwindCount", "NetDollar",
-            "PretaxLessCoF"]
+            "PretaxLessCoF", AVG_REC]
 
 # Output names
 BOARDS       = "Booked Accounts"
@@ -77,6 +88,12 @@ UNIT_RATE    = "Unit Charge-Off Rate"
 DOLLAR_RATE  = "Dollar Charge-Off Rate"
 ROA          = "ROA"
 YEAR         = "Year"
+
+
+# True  - the receivables column is already the average to date at that MOB
+# False - it is the end-of-period balance, so the average is taken across every
+#         month on book up to 12 / 24 / 36, before those rows are selected
+RECEIVABLES_IS_AVERAGE = False
 
 
 class SchemaGap(Exception):
@@ -125,6 +142,39 @@ def resolve_columns(df, *, report=None):
     return out
 
 
+def add_avg_receivables(df, *, already_average=None, report=None):
+    """Average gross receivables to date - the denominator of both rates.
+
+    This runs BEFORE the MOB 12/24/36 rows are selected. An average to date is
+    taken over every month up to that point, so months 1-11 have to still be
+    in the frame when it is computed.
+    """
+    notes = report if report is not None else []
+    if already_average is None:
+        already_average = RECEIVABLES_IS_AVERAGE
+    if "Receivables" not in df.columns:
+        notes.append(f"NOT FOUND - no receivables column, so {DOLLAR_RATE} and "
+                     f"{ROA} cannot be computed. Name it in ALIASES.")
+        return df
+    out = df.copy()
+    rec = pd.to_numeric(out["Receivables"], errors="coerce").fillna(0.0)
+    if already_average:
+        out[AVG_REC] = rec
+        notes.append(f"{AVG_REC}: taken from the file as supplied")
+        return out
+
+    dims = [c for c in DIMENSIONS if c in out.columns]
+    mob = pd.to_numeric(out["MOB"], errors="coerce")
+    out = out.assign(_rec=rec, _mob=mob).sort_values(dims + ["_mob"])
+    out[AVG_REC] = (out.groupby(dims, dropna=False, observed=True)["_rec"]
+                       .expanding().mean()
+                       .reset_index(level=list(range(len(dims))), drop=True))
+    out = out.drop(columns=["_rec", "_mob"])
+    notes.append(f"{AVG_REC}: running mean of Receivables across every month "
+                 f"on book, read at 12 / 24 / 36")
+    return out
+
+
 def keep_year_mobs(df, *, report=None):
     """Keep only MOB 12, 24 and 36, and label each Yr 1 / Yr 2 / Yr 3."""
     notes = report if report is not None else []
@@ -163,45 +213,37 @@ def aggregate(df, *, by=None, report=None):
     return out
 
 
-def add_rates(df, *, dollar_denominator=None, roa_denominator=None,
-              report=None):
-    """The heat map's four measures.
+def add_rates(df, *, report=None):
+    """The heat map's measures.
 
-    The unit rate is settled: net unit charge-off over new accounts less
-    unwinds. The dollar rate and the ROA each need a denominator this file does
-    not obviously carry, so they are left blank until one is named - pass a
-    column name, or a callable taking the frame and returning a series.
+      Unit Charge-Off Rate   net unit charge-off / (new accounts - unwinds)
+      Dollar Charge-Off Rate net dollar / average gross receivables
+      ROA                    (cf pretax less cost of funds
+                              / average gross receivables) / MOB x 12
     """
     notes = report if report is not None else []
     out = df.copy()
     boards = _num(out, "NewAccounts")
-    unwinds = _num(out, "UnwindCount")
 
     out[BOARDS] = boards
-    out[UNIT_DEN] = boards - unwinds
+    out[UNIT_DEN] = boards - _num(out, "UnwindCount")
     out[UNIT_RATE] = _div(_num(out, "NetUnitChargeOff"), out[UNIT_DEN])
     notes.append(f"{UNIT_RATE} = NetUnitChargeOff / (NewAccounts - UnwindCount)")
 
-    out[DOLLAR_RATE] = _resolve_rate(out, "NetDollar", dollar_denominator,
-                                     DOLLAR_RATE, notes)
-    out[ROA] = _resolve_rate(out, "PretaxLessCoF", roa_denominator, ROA, notes)
+    if AVG_REC not in out.columns:
+        notes.append(f"no {AVG_REC}, so {DOLLAR_RATE} and {ROA} are blank")
+        out[DOLLAR_RATE] = pd.Series(pd.NA, index=out.index, dtype="Float64")
+        out[ROA] = pd.Series(pd.NA, index=out.index, dtype="Float64")
+        return out
+
+    avg_rec = _num(out, AVG_REC)
+    out[DOLLAR_RATE] = _div(_num(out, "NetDollar"), avg_rec)
+    notes.append(f"{DOLLAR_RATE} = NetDollar / {AVG_REC}")
+
+    mob = pd.to_numeric(out["MOB"], errors="coerce")
+    out[ROA] = _div(_num(out, "PretaxLessCoF"), avg_rec) / mob.where(mob > 0) * 12
+    notes.append(f"{ROA} = (PretaxLessCoF / {AVG_REC}) / MOB x 12")
     return out
-
-
-def _resolve_rate(out, numerator, denominator, label, notes):
-    num = _num(out, numerator)
-    if denominator is None:
-        notes.append(f"{label}: no denominator given, so the column is blank. "
-                     f"Numerator is {numerator}.")
-        return pd.Series(pd.NA, index=out.index, dtype="Float64")
-    if callable(denominator):
-        den = pd.Series(denominator(out), index=out.index).astype(float)
-        notes.append(f"{label} = {numerator} / (supplied)")
-        return _div(num, den)
-    if denominator not in out.columns:
-        raise SchemaGap(f"{label}: denominator {denominator!r} is not a column")
-    notes.append(f"{label} = {numerator} / {denominator}")
-    return _div(num, out[denominator])
 
 
 def _num(df, name):
@@ -215,14 +257,19 @@ def _div(num, den):
     return num / den.where(den.notna() & (den != 0))
 
 
-def build(csv_path, *, by=None, dollar_denominator=None, roa_denominator=None,
-          report=None):
+def build(csv_path, *, by=None, receivables_is_average=None, report=None):
+    """Read the actuals CSV and return one row per cohort per year.
+
+    The order matters: the average receivables are taken across every month on
+    book, so that happens before the 12 / 24 / 36 rows are selected.
+    """
     notes = report if report is not None else []
     df = pd.read_csv(csv_path, low_memory=False)
     notes.append(f"{len(df):,} rows, {len(df.columns)} columns from {csv_path}")
     df = resolve_columns(df, report=notes)
+    df = add_avg_receivables(df, already_average=receivables_is_average,
+                             report=notes)
     df = keep_year_mobs(df, report=notes)
     df = aggregate(df, by=by, report=notes)
-    df = add_rates(df, dollar_denominator=dollar_denominator,
-                   roa_denominator=roa_denominator, report=notes)
+    df = add_rates(df, report=notes)
     return df

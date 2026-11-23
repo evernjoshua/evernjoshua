@@ -6,6 +6,7 @@ than the ledger they came from.
 
 Columns, as described:
 
+  acquisition segment              Credit Karma, Experian, ... - the campaign
   vintage, vintage date            the cohort
   account, account number          IGNORED - always "First Account" or null
   subchannel                       all Digital
@@ -32,9 +33,11 @@ import pandas as pd
 # spaces, underscores and punctuation, so "Net Unit Charge Off",
 # "net_unit_chargeoff" and "NetUnitChargeOff" all land on the same column.
 ALIASES = {
-    # Name the campaign column here if the file spells it differently - this
-    # is what matches a row to a workbook tab.
-    "Campaign":       ["campaign", "brand", "branding", "source", "partner",
+    # Acquisition segment says whether a row is Credit Karma, Experian and so
+    # on. It is what matches a row to a workbook tab.
+    "Campaign":       ["acquisition segment", "acquisitionsegment",
+                       "acq segment", "acquisition", "acquisitions",
+                       "campaign", "brand", "branding", "source", "partner",
                        "acquisition source", "marketing source"],
     "Vintage":        ["vintage"],
     "VintageDate":    ["vintage date", "vintagedate"],
@@ -173,6 +176,43 @@ def add_avg_receivables(df, *, already_average=None, report=None):
     notes.append(f"{AVG_REC}: running mean of Receivables across every month "
                  f"on book, read at 12 / 24 / 36")
     return out
+
+
+def column_map(df):
+    """Every column in the file beside the name it resolved to.
+
+    The way to check a file without sending it anywhere: run this and read the
+    "used as" column.
+    """
+    rows = []
+    for col in df.columns:
+        k = _key(col)
+        if k in _IGNORE:
+            used = "- ignored"
+        elif k in _LOOKUP:
+            used = _LOOKUP[k]
+        else:
+            used = "- not used"
+        rows.append({"column in your file": col, "used as": used})
+    found = {r["used as"] for r in rows}
+    for canon in ALIASES:
+        if canon not in found:
+            rows.append({"column in your file": "- MISSING -", "used as": canon})
+    return pd.DataFrame(rows)
+
+
+def dimension_values(df, *, limit=12):
+    """The distinct values of each cohort column, to eyeball against the
+    workbook's tab names."""
+    rows = []
+    for c in DIMENSIONS + ["MOB"]:
+        if c not in df.columns:
+            continue
+        vals = df[c].dropna().unique()
+        shown = ", ".join(map(str, sorted(map(str, vals))[:limit]))
+        rows.append({"column": c, "distinct": len(vals),
+                     "values": shown + (" ..." if len(vals) > limit else "")})
+    return pd.DataFrame(rows)
 
 
 def keep_year_mobs(df, *, report=None):

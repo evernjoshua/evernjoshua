@@ -2,7 +2,7 @@
 import numpy as np, pandas as pd, read_actuals as ra
 
 # Headers spelled the way a hand-built export tends to spell them.
-HEADERS = ["Campaign", "Vintage", "Vintage Date", "Account", "Account Number",
+HEADERS = ["Acquisition Segment", "Vintage", "Vintage Date", "Account", "Account Number",
            "Subchannel", "Application Credit Score", "Vantage Range",
            "Annual Fee Group", "Annual Fee", "Original Credit Line",
            "Month on Book", "New Accounts", "Net Unit Charge Off",
@@ -24,7 +24,7 @@ def fixture(seed=3):
                         live = max(boards - unwinds, 1)
                         co = int(live * 0.004 * mob)
                         rows.append({
-                            "Campaign": campaign,
+                            "Acquisition Segment": campaign,
                             "Ending Receivable":
                                 live * 420.0 * (1 - 0.008 * mob),
                             "Vintage": vintage, "Vintage Date": vdate,
@@ -58,6 +58,16 @@ def main():
         [c for c in ra.ALIASES if c not in df.columns]
 
     assert "Campaign" in df.columns and "Receivables" in df.columns
+    # the mapping report names every column and what it became
+    cmap = ra.column_map(fixture())
+    assert cmap.loc[cmap["column in your file"] == "Acquisition Segment",
+                    "used as"].iloc[0] == "Campaign"
+    assert not (cmap["column in your file"] == "- MISSING -").any(), \
+        cmap[cmap["column in your file"] == "- MISSING -"]
+    print("\ncolumn map")
+    print(cmap.to_string(index=False))
+    print("\nvalues found")
+    print(ra.dimension_values(df).to_string(index=False))
     df = ra.add_avg_receivables(df, report=log)
     df = ra.keep_year_mobs(df, report=log)
     assert set(df["MOB"]) == {12, 24, 36}
